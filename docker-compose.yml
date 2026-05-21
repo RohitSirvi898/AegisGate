@@ -1,0 +1,54 @@
+version: '3.8'
+
+services:
+  # 1. Distributed Cache Layer (Rate Limiting)
+  aegis-cache:
+    image: redis:7.2-alpine
+    container_name: aegis-cache
+    ports:
+      - "6379:6379"
+    command: redis-server --appendonly yes
+    volumes:
+      - aegis_redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+  # 2. Asynchronous Event Stream (Data Plane -> Control Plane decoupling)
+  aegis-queue:
+    image: rabbitmq:3.12-management-alpine
+    container_name: aegis-queue
+    ports:
+      - "5672:5672"   # AMQP protocol port
+      - "15672:15672" # Management Dashboard UI
+    volumes:
+      - aegis_rabbitmq_data:/var/lib/rabbitmq
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "check_running"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+
+  # 3. Persistent Analytics Store (Threat Logs & LLM reports)
+  aegis-db:
+    image: mongo:7.0
+    container_name: aegis-db
+    ports:
+      - "27017:27017"
+    environment:
+      MONGO_INITDB_ROOT_USERNAME: aegis_admin
+      MONGO_INITDB_ROOT_PASSWORD: aegis_secure_password
+    volumes:
+      - aegis_mongo_data:/data/db
+    healthcheck:
+      test: ["CMD", "mongosh", "--eval", "db.adminCommand('ping')"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+
+volumes:
+  aegis_redis_data:
+  aegis_rabbitmq_data:
+  aegis_mongo_data:
