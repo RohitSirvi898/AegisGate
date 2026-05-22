@@ -3,21 +3,32 @@ import { createProxyMiddleware, type Options } from 'http-proxy-middleware';
 import dotenv from 'dotenv';
 import { ServerResponse } from 'http';
 import { rateLimiter } from './middleware/rateLimiter.js';
+import { authenticateAndAuthorize } from './middleware/authenticate.js';
 
 dotenv.config();
 
 const app = express();
 const PORT = process.env.PORT || 8080;
 
-// Apply the global sliding-window rate limiter directly across all incoming request hooks
+// Apply global DDoS firewall log rate metrics across all entries
 app.use(rateLimiter);
 
-const routingTable: Record<string, string> = {
-    '/api/v1/users': 'http://httpbin.org/anything/users',
-    '/api/v1/payments': 'http://httpbin.org/anything/payments'
-};
+// Target downstream configurations mapped to their explicit protection rules
+const routesConfig = [
+    {
+        path: '/api/v1/users',
+        target: 'http://httpbin.org/anything/users',
+        roles: ['admin', 'developer', 'user'] // Public/General data bounds
+    },
+    {
+        path: '/api/v1/payments',
+        target: 'http://httpbin.org/anything/payments',
+        roles: ['admin'] // Highly critical administrative route
+    }
+];
 
-Object.entries(routingTable).forEach(([path, target]) => {
+// Register dynamic proxies coupled with identity firewall checkpoints
+routesConfig.forEach(({ path, target, roles }) => {
     const proxyOptions: Options = {
         target,
         changeOrigin: true,
@@ -26,20 +37,26 @@ Object.entries(routingTable).forEach(([path, target]) => {
             error: (err, req, res) => {
                 if (res instanceof ServerResponse && !res.headersSent) {
                     res.writeHead(502, { 'Content-Type': 'application/json' });
-                    res.end(JSON.stringify({
-                        error: 'Bad Gateway',
-                        message: 'The upstream backend service is currently unreachable.',
-                        timestamp: new Date().toISOString()
-                    }));
+                    res.end(JSON.stringify({ error: 'Bad Gateway', message: 'Upstream service unreachable.' }));
                 }
+            },
+            proxyReq: (proxyReq, req, res) => {
+                proxyReq.setHeader('X-Shielded-By', 'AegisGate-Core');
             }
         }
     };
-    app.use(path, createProxyMiddleware(proxyOptions));
+
+    // Secure path execution wrapper: [Rate Limit] -> [JWT/RBAC Check] -> [Proxy Stream Forwarding]
+    app.use(path, authenticateAndAuthorize(roles), createProxyMiddleware(proxyOptions));
+});
+
+app.use((req, res) => {
+    res.status(404).json({ error: 'Not Found', message: 'Endpoint path configuration route missing.' });
 });
 
 app.listen(PORT, () => {
     console.log(`=================================================`);
     console.log(`🛡️  AegisGate Core Proxy Server running on port: ${PORT}`);
+    console.log(`🔐 Edge Auth Protection & RBAC Layers Engaged`);
     console.log(`=================================================`);
 });
