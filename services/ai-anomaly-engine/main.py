@@ -44,7 +44,7 @@ class PayloadMetrics(BaseModel):
         }
     )
 
-@app.post("/api/v1/analyze", response_model=dict)
+@app.post("/analyze", response_model=dict)
 async def analyze_payload(payload: PayloadMetrics):
     """
     Highly optimized inference endpoint evaluating telemetry for structural anomalies.
