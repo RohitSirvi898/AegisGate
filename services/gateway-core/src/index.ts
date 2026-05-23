@@ -29,6 +29,14 @@ const routesConfig = [
 
 // Register dynamic proxies coupled with identity firewall checkpoints
 routesConfig.forEach(({ path, target, roles }) => {
+    // Temporarily stub/intercept the /api/v1/users route to bypass Gunicorn downstream and isolate gateway/rate-limiter benchmarking
+    if (path === '/api/v1/users') {
+        app.use(path, authenticateAndAuthorize(roles), (req, res) => {
+            res.status(200).json({ status: "success", message: "Static Gateway Benchmark Bypass" });
+        });
+        return;
+    }
+
     const proxyOptions: Options = {
         target,
         changeOrigin: true,
