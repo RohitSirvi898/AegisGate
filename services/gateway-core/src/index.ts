@@ -1,4 +1,4 @@
-import express from 'express';
+import express, { type Request, type Response, type NextFunction } from 'express';
 import { createProxyMiddleware, type Options } from 'http-proxy-middleware';
 import dotenv from 'dotenv';
 import { ServerResponse } from 'http';
@@ -12,6 +12,42 @@ const PORT = process.env.PORT || 8080;
 
 // Apply global DDoS firewall log rate metrics across all entries
 app.use(rateLimiter);
+
+/**
+ * Dedicated Asynchronous Telemetry Logging Middleware.
+ * Captures request footprints and sends telemetry data to the Python AI Anomaly Engine.
+ */
+const telemetryLogger = async (req: Request, res: Response, next: NextFunction): Promise<void> => {
+    const pathLength = (req.originalUrl || req.url || '').length;
+    const methodLength = (req.method || '').length;
+    const timestampFraction = (Date.now() % 10000) / 10000;
+    const contentLength = Number(req.headers['content-length']) || 0;
+
+    // Nest numerical features inside the 'metrics' field required by PayloadMetrics schema
+    const telemetryPayload = {
+        metrics: [
+            pathLength / 100.0,          // Normalized path length feature
+            methodLength / 10.0,         // Normalized HTTP method length feature
+            timestampFraction,           // Time-based periodic feature
+            contentLength / 1000.0       // Normalized content length feature
+        ]
+    };
+
+    // Asynchronous fire-and-forget background HTTP call to AI Anomaly Engine uvicorn server
+    // Guided by an absolute Fail-Open Policy to ensure it never delays or drops user responses
+    fetch('http://localhost:8000/analyze', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(telemetryPayload)
+    }).catch((err) => {
+        console.error('[Telemetry Fail-Open Bypass] Silently bypassed anomaly engine exception:', (err as Error).message);
+    });
+
+    next();
+};
+
+// Apply telemetry logger globally upstream of the routing pipeline
+app.use(telemetryLogger);
 
 // Target downstream configurations mapped to their explicit protection rules
 const routesConfig = [
@@ -27,8 +63,41 @@ const routesConfig = [
     }
 ];
 
+// Native local Express route handler directly for the /api/v1/users endpoint
+app.get('/api/v1/users', authenticateAndAuthorize(['admin', 'developer', 'user']), (req, res) => {
+    // 1. Process local user array data instantly
+    const userData = { status: "success", data: [] };
+
+    // 2. Fire background telemetry logic to FastAPI exactly as currently written
+    const pathLength = (req.originalUrl || req.url || '').length;
+    const methodLength = (req.method || '').length;
+    const timestampFraction = (Date.now() % 10000) / 10000;
+    const contentLength = Number(req.headers['content-length']) || 0;
+    const telemetryPayload = {
+        metrics: [
+            pathLength / 100.0,
+            methodLength / 10.0,
+            timestampFraction,
+            contentLength / 1000.0
+        ]
+    };
+    fetch('http://localhost:8000/analyze', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(telemetryPayload)
+    }).catch((err) => {
+        console.error('[Telemetry Fail-Open Bypass] Silently bypassed anomaly engine exception:', (err as Error).message);
+    });
+    // 3. Instantly return local payload to client
+    return res.status(200).json(userData);
+});
 // Register dynamic proxies coupled with identity firewall checkpoints
 routesConfig.forEach(({ path, target, roles }) => {
+    // Skip /api/v1/users proxy configuration to prioritize the native controller route
+    if (path === '/api/v1/users') {
+        return;
+    }
+
     const proxyOptions: Options = {
         target,
         changeOrigin: true,
