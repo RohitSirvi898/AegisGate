@@ -1,14 +1,22 @@
 import express, { type Request, type Response, type NextFunction } from 'express';
-import { createProxyMiddleware, type Options } from 'http-proxy-middleware';
+import { createProxyMiddleware, fixRequestBody, type Options } from 'http-proxy-middleware';
 import dotenv from 'dotenv';
 import { ServerResponse } from 'http';
 import { rateLimiter } from './middleware/rateLimiter.js';
 import { authenticateAndAuthorize } from './middleware/authenticate.js';
+import { aiFirewall } from './middleware/aiFirewall.js';
 
 dotenv.config();
 
 const app = express();
 const PORT = process.env.PORT || 8080;
+
+// Enable express.json body parser globally with rawBody verification capture
+app.use(express.json({
+    verify: (req: any, res, buf) => {
+        req.rawBody = buf.toString();
+    }
+}));
 
 // Apply global DDoS firewall log rate metrics across all entries
 app.use(rateLimiter);
@@ -64,7 +72,7 @@ const routesConfig = [
 ];
 
 // Native local Express route handler directly for the /api/v1/users endpoint
-app.get('/api/v1/users', authenticateAndAuthorize(['admin', 'developer', 'user']), (req, res) => {
+app.all('/api/v1/users', authenticateAndAuthorize(['admin', 'developer', 'user']), aiFirewall, (req, res) => {
     // 1. Process local user array data instantly
     const userData = { status: "success", data: [] };
 
@@ -111,12 +119,13 @@ routesConfig.forEach(({ path, target, roles }) => {
             },
             proxyReq: (proxyReq, req, res) => {
                 proxyReq.setHeader('X-Shielded-By', 'AegisGate-Core');
+                fixRequestBody(proxyReq, req);
             }
         }
     };
 
-    // Secure path execution wrapper: [Rate Limit] -> [JWT/RBAC Check] -> [Proxy Stream Forwarding]
-    app.use(path, authenticateAndAuthorize(roles), createProxyMiddleware(proxyOptions));
+    // Secure path execution wrapper: [Rate Limit] -> [JWT/RBAC Check] -> [AI Firewall] -> [Proxy Stream Forwarding]
+    app.use(path, authenticateAndAuthorize(roles), aiFirewall, createProxyMiddleware(proxyOptions));
 });
 
 app.use((req, res) => {
