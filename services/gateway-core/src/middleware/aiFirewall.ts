@@ -1,4 +1,5 @@
 import type { Request, Response, NextFunction } from 'express';
+import { publishThreatLog } from '../config/queue.js';
 
 const AI_ANOMALY_ENGINE_URL = process.env.AI_ANOMALY_ENGINE_URL || 'http://localhost:8000/analyze';
 const AI_INFERENCE_TIMEOUT_MS = parseInt(process.env.AI_INFERENCE_TIMEOUT_MS || '200', 10);
@@ -90,6 +91,17 @@ export const aiFirewall = async (req: Request, res: Response, next: NextFunction
 
         // If anomaly detected, terminate and return HTTP 403 Forbidden
         if (data.is_anomaly) {
+            // Asynchronous, un-awaited background promise to publish threat details
+            publishThreatLog({
+                clientIp: req.ip || req.socket.remoteAddress || 'unknown-client',
+                endpoint: req.originalUrl || req.url || '',
+                method: req.method,
+                timestamp: new Date().toISOString(),
+                rawBody: bodyStr
+            }).catch((err) => {
+                console.error('[Background Threat Publish Fault] Fail-open trace:', err);
+            });
+
             res.status(403).json({
                 error: 'Malicious Payload Detected',
                 message: 'Security boundary blocked request due to structural anomalies.'
