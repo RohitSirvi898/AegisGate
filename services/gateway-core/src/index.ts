@@ -5,6 +5,7 @@ import { ServerResponse } from 'http';
 import { rateLimiter } from './middleware/rateLimiter.js';
 import { authenticateAndAuthorize } from './middleware/authenticate.js';
 import { aiFirewall } from './middleware/aiFirewall.js';
+import { initQueue } from './config/queue.js';
 
 dotenv.config();
 
@@ -132,9 +133,10 @@ app.use((req, res) => {
     res.status(404).json({ error: 'Not Found', message: 'Endpoint path configuration route missing.' });
 });
 
-app.listen(PORT, () => {
+app.listen(PORT, async () => {
     console.log(`=================================================`);
     console.log(`🛡️  AegisGate Core Proxy Server running on port: ${PORT}`);
     console.log(`🔐 Edge Auth Protection & RBAC Layers Engaged`);
     console.log(`=================================================`);
+    await initQueue();
 });
