@@ -1,0 +1,48 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  body {
+    @apply bg-cyber-canvas text-slate-100 font-sans antialiased;
+    background-color: #0b0f19;
+  }
+}
+
+/* Tech-console styled micro-accents */
+.cyber-glow-emerald {
+  box-shadow: 0 0 15px rgba(16, 185, 129, 0.25);
+}
+
+.cyber-glow-crimson {
+  box-shadow: 0 0 15px rgba(239, 68, 68, 0.25);
+}
+
+.cyber-glow-amber {
+  box-shadow: 0 0 15px rgba(245, 158, 11, 0.25);
+}
+
+/* High-tech grid canvas scanlines background effect */
+.grid-scanlines {
+  -moz-background-inline-policy: rgba(18, 24, 38, 0.8) 50%, rgba(11, 15, 25, 0.8) 50%;
+  background-size: 100% 4px;
+}
+
+/* Scrollbar customizations */
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+
+::-webkit-scrollbar-track {
+  background: #0f172a;
+}
+
+::-webkit-scrollbar-thumb {
+  background: #334155;
+  border-radius: 4px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: #475569;
+}
