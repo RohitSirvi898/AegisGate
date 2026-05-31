@@ -102,6 +102,7 @@ Your response must be ONLY the raw JSON array. Do not include markdown code bloc
             };
 
             return {
+                projectId: item.payload.projectId || 'aegis_default_project',
                 clientIp: item.payload.clientIp,
                 endpoint: item.payload.endpoint,
                 method: item.payload.method,

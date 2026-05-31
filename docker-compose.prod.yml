@@ -1,0 +1,61 @@
+version: '3.8'
+
+services:
+  aegis-cache:
+    image: redis:7-alpine
+    container_name: aegis_cache
+    restart: always
+    networks:
+      - aegis_mesh
+
+  aegis-queue:
+    image: rabbitmq:3-management-alpine
+    container_name: aegis_queue
+    restart: always
+    networks:
+      - aegis_mesh
+
+  ai-anomaly-engine:
+    build:
+      context: ./services/ai-anomaly-engine
+    container_name: ai_anomaly_engine
+    restart: always
+    networks:
+      - aegis_mesh
+
+  gateway-core:
+    build:
+      context: ./services/gateway-core
+    container_name: gateway_core
+    restart: always
+    ports:
+      - "8080:8080"
+    environment:
+      - PORT=8080
+      - AI_ANOMALY_ENGINE_URL=http://ai-anomaly-engine:8000/analyze
+      - MONGO_URI=${MONGO_URI}
+      - REDIS_URL=redis://aegis_cache:6379
+    depends_on:
+      - aegis-cache
+      - ai-anomaly-engine
+    networks:
+      - aegis_mesh
+
+  async-audit-worker:
+    build:
+      context: ./services/async-audit-worker
+    container_name: async_audit_worker
+    restart: always
+    environment:
+      - MONGO_URI=${MONGO_URI}
+      # Point securely to the queue container DNS hostname
+      - RABBITMQ_URL=amqp://aegis-queue:5672
+      - LLM_API_KEY=${LLM_API_KEY}
+    depends_on:
+      - aegis-queue
+    networks:
+      - aegis_mesh
+
+networks:
+  aegis_mesh:
+    driver: bridge

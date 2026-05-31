@@ -1,8 +1,10 @@
 node_modules/
 dist/
 .env
-
-# Python bytecode and cache
+.env.local
+.venv/
+*.log
+.DS_Store
 __pycache__/
 *.pyc
 *.pyo

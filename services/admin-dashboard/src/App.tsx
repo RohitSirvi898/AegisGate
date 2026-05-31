@@ -6,13 +6,19 @@ export default function App() {
   const { threats, stats, loading, error, refetch } = useThreatTelemetry();
   const [selectedThreat, setSelectedThreat] = useState<ThreatRecord | null>(null);
   const [isRefreshing, setIsRefreshing] = useState(false);
-
+  
   // Compute live security console metrics from database aggregates
   const totalBlocked = stats.totalBlocks;
   const criticalCount = stats.criticalCount;
   const highCount = stats.highCount;
-  
-  const criticalAndHighCount = criticalCount + highCount;
+
+
+  // Tab management & Project Provisioning states
+  const [activeTab, setActiveTab] = useState<'analytics' | 'provisioning'>('analytics');
+  const [projectName, setProjectName] = useState('');
+  const [provisioningLoading, setProvisioningLoading] = useState(false);
+  const [provisioningError, setProvisioningError] = useState<string | null>(null);
+  const [provisionedProject, setProvisionedProject] = useState<{ _id: string; projectName: string; apiKey: string } | null>(null);
 
   // Trigger manual telemetry flush with spin animations
   const handleManualRefresh = async () => {
@@ -20,6 +26,42 @@ export default function App() {
     await refetch();
     setTimeout(() => setIsRefreshing(false), 800);
   };
+
+  const handleCreateProject = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!projectName.trim()) return;
+
+    setProvisioningLoading(true);
+    setProvisioningError(null);
+    setProvisionedProject(null);
+
+    try {
+      const response = await fetch(`${import.meta.env.VITE_API_BASE_URL}/api/v1/projects`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({ projectName: projectName.trim() }),
+      });
+
+      if (!response.ok) {
+        const errorData = await response.json().catch(() => ({}));
+        throw new Error(errorData.message || `Server returned HTTP ${response.status}`);
+      }
+
+      const data = await response.json();
+      setProvisionedProject(data);
+      setProjectName(''); // Reset input
+    } catch (err: any) {
+      console.error('❌ Failed to provision project:', err);
+      setProvisioningError(err.message || 'Network error occurred. Failed to connect to provisioning gateway.');
+    } finally {
+      setProvisioningLoading(false);
+    }
+  };
+
+
+  const criticalAndHighCount = criticalCount + highCount;
 
   return (
     <div className="min-h-screen bg-[#070b13] text-slate-100 flex flex-col font-mono relative overflow-hidden">
@@ -69,8 +111,40 @@ export default function App() {
         </div>
       </header>
 
+      {/* Top Navigation Tab Bar for multi-tenancy provisioning and analytics */}
+      <div className="border-b border-slate-900 bg-[#080d16]/90 px-6 py-2.5 flex gap-4 text-xs z-20">
+        <button
+          onClick={() => setActiveTab('analytics')}
+          className={`px-4 py-2 rounded transition duration-200 uppercase tracking-widest font-semibold flex items-center gap-2 border cursor-pointer ${
+            activeTab === 'analytics'
+              ? 'text-emerald-400 bg-emerald-500/10 border-emerald-500/35 cyber-glow-emerald'
+              : 'text-slate-400 hover:text-slate-200 border-transparent hover:bg-slate-850'
+          }`}
+        >
+          <Activity className="w-3.5 h-3.5" />
+          <span>Analytics Console</span>
+        </button>
+        <button
+          onClick={() => {
+            setActiveTab('provisioning');
+            setProvisionedProject(null);
+          }}
+          className={`px-4 py-2 rounded transition duration-200 uppercase tracking-widest font-semibold flex items-center gap-2 border cursor-pointer ${
+            activeTab === 'provisioning'
+              ? 'text-emerald-400 bg-emerald-500/10 border-emerald-500/35 cyber-glow-emerald'
+              : 'text-slate-400 hover:text-slate-200 border-transparent hover:bg-slate-850'
+          }`}
+        >
+          <Code className="w-3.5 h-3.5" />
+          <span>Tenant Provisioning</span>
+        </button>
+      </div>
+
       {/* Main Core Dashboard Grid */}
       <main className="flex-1 p-6 flex flex-col gap-6 max-w-7xl w-full mx-auto z-10">
+        {activeTab === 'analytics' ? (
+          <>
+
         
         {/* Row 1: Key Telemetry Summary Indicators */}
         <section className="grid grid-cols-1 md:grid-cols-4 gap-4">
@@ -268,8 +342,90 @@ export default function App() {
           </div>
 
         </section>
+      </>
+    ) : (
+      <section className="flex-1 max-w-2xl w-full mx-auto bg-[#0c121e]/80 border border-slate-800 rounded-xl p-6 flex flex-col gap-6 shadow-2xl">
+        <div className="border-b border-slate-850 pb-4">
+          <h2 className="text-sm font-bold uppercase tracking-widest text-emerald-400 flex items-center gap-2">
+            <Code className="w-4 h-4" />
+            <span>Multi-Tenant Developer Provisioning</span>
+          </h2>
+          <p className="text-xs text-slate-400 mt-1">Register a new project environment to acquire isolated API keys and separate telemetry metrics streams.</p>
+        </div>
 
-      </main>
+        {/* Form block */}
+        <form onSubmit={handleCreateProject} className="flex flex-col gap-4">
+          <div className="flex flex-col gap-2">
+            <label htmlFor="projectName" className="text-xs text-slate-400 uppercase tracking-wider">Project Name</label>
+            <input
+              type="text"
+              id="projectName"
+              value={projectName}
+              onChange={(e) => setProjectName(e.target.value)}
+              placeholder="e.g. Production Payment Portal"
+              disabled={provisioningLoading}
+              className="bg-slate-900 border border-slate-800 focus:border-emerald-500/50 rounded px-4 py-2.5 text-slate-100 placeholder-slate-600 text-sm focus:outline-none transition duration-200 font-mono"
+            />
+          </div>
+          
+          {provisioningError && (
+            <p className="text-xs text-red-400 bg-red-500/10 border border-red-500/20 px-3 py-2 rounded font-semibold flex items-center gap-2">
+              <AlertTriangle className="w-3.5 h-3.5 animate-pulse" />
+              <span>{provisioningError}</span>
+            </p>
+          )}
+
+          <button
+            type="submit"
+            disabled={provisioningLoading || !projectName.trim()}
+            className="bg-emerald-500/10 hover:bg-emerald-500/20 disabled:opacity-40 disabled:hover:bg-emerald-500/10 text-emerald-400 font-bold uppercase text-xs tracking-widest border border-emerald-500/35 cyber-glow-emerald rounded py-3 transition duration-200 flex items-center justify-center gap-2 cursor-pointer disabled:cursor-not-allowed"
+          >
+            {provisioningLoading ? (
+              <>
+                <RefreshCw className="w-3.5 h-3.5 animate-spin" />
+                <span>Provisioning Environment...</span>
+              </>
+            ) : (
+              <>
+                <Shield className="w-3.5 h-3.5" />
+                <span>Generate API Keys</span>
+              </>
+            )}
+          </button>
+        </form>
+
+        {/* Success View */}
+        {provisionedProject && (
+          <div className="bg-slate-900/60 p-5 rounded-lg border border-emerald-500/20 flex flex-col gap-4 mt-2 transition-all duration-300">
+            <div className="flex items-center gap-2 text-emerald-400 font-semibold text-xs uppercase tracking-wider">
+              <Shield className="w-4 h-4" />
+              <span>Project Environment Provisioned Successfully!</span>
+            </div>
+            
+            <div className="flex flex-col gap-1">
+              <span className="text-slate-500 text-[10px] uppercase">Project Name</span>
+              <span className="text-slate-200 text-sm font-semibold">{provisionedProject.projectName}</span>
+            </div>
+
+            <div className="flex flex-col gap-1.5">
+              <span className="text-slate-500 text-[10px] uppercase">Project ID (projectId)</span>
+              <div className="flex items-center justify-between bg-[#05080f] px-3.5 py-2.5 rounded border border-slate-850 font-mono text-xs text-slate-300 select-all group relative">
+                <span className="break-all">{provisionedProject._id}</span>
+              </div>
+            </div>
+
+            <div className="flex flex-col gap-1.5">
+              <span className="text-slate-500 text-[10px] uppercase">API Access Key (apiKey)</span>
+              <div className="flex items-center justify-between bg-[#05080f] px-3.5 py-2.5 rounded border border-slate-850 font-mono text-xs text-emerald-400 select-all border-l-2 border-l-emerald-500 shadow-inner group relative">
+                <span className="break-all font-bold">{provisionedProject.apiKey}</span>
+              </div>
+              <span className="text-[10px] text-amber-500/80 font-semibold mt-1">⚠️ IMPORTANT: Store this key safely. For security reasons, it cannot be recovered or viewed again.</span>
+            </div>
+          </div>
+        )}
+      </section>
+    )}
+  </main>
 
       {/* Cyber Command Footer */}
       <footer className="border-t border-slate-850 bg-[#080d16] px-6 py-3.5 text-center text-[10px] text-slate-500 uppercase tracking-widest flex justify-between">

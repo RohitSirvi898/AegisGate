@@ -1,4 +1,5 @@
 import { useState, useEffect } from 'react';
+const baseURL = import.meta.env.VITE_API_BASE_URL
 
 export interface ThreatRecord {
     _id: string;
@@ -83,8 +84,11 @@ export const useThreatTelemetry = () => {
 
     const fetchTelemetry = async () => {
         try {
-            // Target the Gateway Core analytics endpoint
-            const response = await fetch('http://localhost:8080/api/v1/analytics/telemetry', {
+            // Target the Gateway Core analytics endpoint with tenant header isolation
+            const response = await fetch(`${baseURL}/api/v1/analytics/telemetry`, {
+                headers: {
+                    'X-Project-Id': 'aegis_default_project'
+                },
                 signal: AbortSignal.timeout(3000)
             });
 
