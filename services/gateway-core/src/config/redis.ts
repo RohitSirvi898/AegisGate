@@ -13,19 +13,29 @@ declare module 'ioredis' {
     }
 }
 
+const REDIS_URL = process.env.REDIS_URL;
 const REDIS_HOST = process.env.REDIS_HOST || 'localhost';
 const REDIS_PORT = Number(process.env.REDIS_PORT) || 6379;
 
 // Initialize a highly performant persistent connection to our Docker container cache
-export const redisClient = new Redis({
-    host: REDIS_HOST,
-    port: REDIS_PORT,
-    maxRetriesPerRequest: 3,
-    retryStrategy(times) {
-        const delay = Math.min(times * 50, 2000);
-        return delay;
-    }
-});
+export const redisClient = REDIS_URL
+    ? new Redis(REDIS_URL, {
+        maxRetriesPerRequest: 3,
+        retryStrategy(times) {
+            const delay = Math.min(times * 50, 2000);
+            return delay;
+        }
+      })
+    : new Redis({
+        host: REDIS_HOST,
+        port: REDIS_PORT,
+        maxRetriesPerRequest: 3,
+        retryStrategy(times) {
+            const delay = Math.min(times * 50, 2000);
+            return delay;
+        }
+      });
+
 
 // Register the custom Lua script rate limiting command
 redisClient.defineCommand('slidingWindowRateLimit', {
