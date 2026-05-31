@@ -3,6 +3,7 @@ import { publishThreatLog } from '../config/queue.js';
 
 const AI_ANOMALY_ENGINE_URL = process.env.AI_ANOMALY_ENGINE_URL || 'http://localhost:8000/analyze';
 const AI_INFERENCE_TIMEOUT_MS = parseInt(process.env.AI_INFERENCE_TIMEOUT_MS || '200', 10);
+const AEGIS_PROJECT_ID = process.env.AEGIS_PROJECT_ID || 'aegis_default_project';
 
 /**
  * High-performance structural metadata extractor that processes a request body string.
@@ -91,8 +92,9 @@ export const aiFirewall = async (req: Request, res: Response, next: NextFunction
 
         // If anomaly detected, terminate and return HTTP 403 Forbidden
         if (data.is_anomaly) {
-            // Asynchronous, un-awaited background promise to publish threat details
+            // Asynchronous, un-awaited background promise to publish threat details with tenant isolation
             publishThreatLog({
+                projectId: AEGIS_PROJECT_ID,
                 clientIp: req.ip || req.socket.remoteAddress || 'unknown-client',
                 endpoint: req.originalUrl || req.url || '',
                 method: req.method,

@@ -1,6 +1,7 @@
 import mongoose, { Schema, Document } from 'mongoose';
 
 export interface IThreatLog extends Document {
+    projectId: string;
     clientIp: string;
     endpoint: string;
     method: string;
@@ -13,6 +14,7 @@ export interface IThreatLog extends Document {
 }
 
 const ThreatLogSchema: Schema = new Schema({
+    projectId: { type: String, required: true, index: true },
     clientIp: { type: String, required: true },
     endpoint: { type: String, required: true },
     method: { type: String, required: true },
