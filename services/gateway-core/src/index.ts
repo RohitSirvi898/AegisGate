@@ -7,10 +7,13 @@ import mongoose from 'mongoose';
 import { rateLimiter } from './middleware/rateLimiter.js';
 import { authenticateAndAuthorize } from './middleware/authenticate.js';
 import { aiFirewall } from './middleware/aiFirewall.js';
-import { initQueue, publishThreatLog } from './config/queue.js';
-import { ThreatLogModel } from './models/threatLog.js';
-import { ProjectModel } from './models/project.js';
-import crypto from 'crypto';
+import { initQueue } from './config/queue.js';
+import { authRouter } from './routes/auth.js';
+import { projectsRouter } from './routes/projects.js';
+import { analyticsRouter } from './routes/analytics.js';
+import { usersRouter } from './routes/users.js';
+
+
 
 dotenv.config();
 
@@ -68,6 +71,14 @@ const telemetryLogger = async (req: Request, res: Response, next: NextFunction):
 // Apply telemetry logger globally upstream of the routing pipeline
 app.use(telemetryLogger);
 
+// Mount stateless IAM authentication routes
+app.use('/api/v1/auth', authRouter);
+
+// Mount modular sub-routers
+app.use('/api/v1/projects', projectsRouter);
+app.use('/api/v1/analytics', analyticsRouter);
+app.use('/api/v1/users', usersRouter);
+
 // Target downstream configurations mapped to their explicit protection rules
 const routesConfig = [
     {
@@ -82,145 +93,7 @@ const routesConfig = [
     }
 ];
 
-// Native local Express route handler directly for the /api/v1/users endpoint
-app.all('/api/v1/users', authenticateAndAuthorize(['admin', 'developer', 'user']), aiFirewall, (req, res) => {
-    // 1. Process local user array data instantly
-    const userData = { status: "success", data: [] };
 
-    // 2. Fire background telemetry logic to FastAPI exactly as currently written
-    const pathLength = (req.originalUrl || req.url || '').length;
-    const methodLength = (req.method || '').length;
-    const timestampFraction = (Date.now() % 10000) / 10000;
-    const contentLength = Number(req.headers['content-length']) || 0;
-    const telemetryPayload = {
-        metrics: [
-            pathLength / 100.0,
-            methodLength / 10.0,
-            timestampFraction,
-            contentLength / 1000.0
-        ]
-    };
-    fetch(AI_ANOMALY_ENGINE_URL, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(telemetryPayload)
-    }).catch((err) => {
-        console.error('[Telemetry Fail-Open Bypass] Silently bypassed anomaly engine exception:', (err as Error).message);
-    });
-    // 3. Instantly return local payload to client
-    return res.status(200).json(userData);
-});
-
-// GET /api/v1/analytics/telemetry route querying live threat logs from MongoDB
-app.get('/api/v1/analytics/telemetry', async (req, res) => {
-    try {
-        const projectId = (req.headers['x-project-id'] as string) || 'aegis_default_project';
-
-        const logs = await ThreatLogModel.find({ projectId })
-            .sort({ createdAt: -1 })
-            .limit(50);
-
-        const totalBlocks = await ThreatLogModel.countDocuments({ projectId });
-        const criticalCount = await ThreatLogModel.countDocuments({ projectId, severity: 'CRITICAL' });
-        const highCount = await ThreatLogModel.countDocuments({ projectId, severity: 'HIGH' });
-
-        return res.status(200).json({
-            totalBlocks,
-            criticalCount,
-            highCount,
-            logs
-        });
-    } catch (error: any) {
-        console.error('❌ Failed to fetch telemetry statistics:', error.message);
-        return res.status(500).json({
-            error: 'Internal Server Error',
-            message: 'Failed to retrieve real-time analytics telemetry data.'
-        });
-    }
-});
-
-
-// POST /api/v1/projects endpoint to register a new project and generate secure API keys
-app.post('/api/v1/projects', async (req: Request, res: Response) => {
-    try {
-        const { projectName } = req.body;
-        if (!projectName || typeof projectName !== 'string' || projectName.trim() === '') {
-            return res.status(400).json({
-                error: 'Bad Request',
-                message: 'Project name is required and must be a valid non-empty string.'
-            });
-        }
-
-        // Generate a secure random token prefixed with ag_live_ using crypto
-        const apiKey = `ag_live_${crypto.randomBytes(24).toString('hex')}`;
-        
-        const newProject = new ProjectModel({
-            projectName: projectName.trim(),
-            developerId: 'default_developer', // Hardcoded developer ID for billing
-            apiKey
-        });
-
-        await newProject.save();
-
-        return res.status(201).json(newProject);
-    } catch (error: any) {
-        console.error('❌ Failed to provision project:', error.message);
-        return res.status(500).json({
-            error: 'Internal Server Error',
-            message: 'Failed to provision a new project and secure API key.'
-        });
-    }
-});
-
-// POST /api/v1/analytics/telemetry endpoint to ingest developer threat logs asynchronously
-app.post('/api/v1/analytics/telemetry', async (req: Request, res: Response) => {
-    try {
-        // Extract the custom Aegis API Key from headers
-        const apiKeyHeader = req.headers['x-aegis-api-key'];
-        if (!apiKeyHeader || typeof apiKeyHeader !== 'string') {
-            return res.status(401).json({
-                error: 'Unauthorized',
-                message: 'Missing Aegis API Key header.'
-            });
-        }
-
-        // Query Project collection using Mongoose Project model to validate the key
-        const project = await ProjectModel.findOne({ apiKey: apiKeyHeader });
-        if (!project) {
-            return res.status(401).json({
-                error: 'Unauthorized',
-                message: 'Invalid or revoked Aegis API Key.'
-            });
-        }
-
-        // Extract internal database project ID and stamp payload
-        const projectId = String(project._id);
-
-        const telemetryPayload = {
-            projectId,
-            clientIp: req.body.clientIp || req.ip || req.socket.remoteAddress || 'unknown-client',
-            endpoint: req.body.endpoint || '',
-            method: req.body.method || 'POST',
-            timestamp: req.body.timestamp || new Date().toISOString(),
-            rawBody: typeof req.body.rawBody === 'string' ? req.body.rawBody : JSON.stringify(req.body.rawBody || {})
-        };
-
-        // Forward enriched payload down system pipeline into RabbitMQ security bus
-        await publishThreatLog(telemetryPayload);
-
-        return res.status(202).json({
-            success: true,
-            message: 'Telemetry packet queued for asynchronous auditing.',
-            projectId
-        });
-    } catch (error: any) {
-        console.error('❌ Failed to ingest analytics telemetry:', error.message);
-        return res.status(500).json({
-            error: 'Internal Server Error',
-            message: 'Failed to ingest telemetry payload.'
-        });
-    }
-});
 
 // Register dynamic proxies coupled with identity firewall checkpoints
 

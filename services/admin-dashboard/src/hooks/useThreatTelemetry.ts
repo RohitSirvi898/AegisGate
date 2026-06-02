@@ -1,5 +1,6 @@
 import { useState, useEffect } from 'react';
-const baseURL = import.meta.env.VITE_API_BASE_URL
+
+const baseURL = import.meta.env.VITE_API_BASE_URL;
 
 export interface ThreatRecord {
     _id: string;
@@ -13,8 +14,7 @@ export interface ThreatRecord {
     summary: string;
 }
 
-
-export const useThreatTelemetry = () => {
+export const useThreatTelemetry = (activeProjectId: string | null, token: string | null) => {
     const [threats, setThreats] = useState<ThreatRecord[]>([]);
     const [stats, setStats] = useState({
         totalBlocks: 0,
@@ -25,12 +25,21 @@ export const useThreatTelemetry = () => {
     const [error, setError] = useState<string | null>(null);
 
     const fetchTelemetry = async () => {
+        // Guard clause at the top: if no activeProjectId or token, do not fetch
+        if (!activeProjectId || !token) {
+            setLoading(false);
+            return;
+        }
+
         try {
+            const headers: Record<string, string> = {
+                'X-Project-Id': activeProjectId,
+                'Authorization': `Bearer ${token}`
+            };
+
             // Target the Gateway Core analytics endpoint with tenant header isolation
             const response = await fetch(`${baseURL}/api/v1/analytics/telemetry`, {
-                headers: {
-                    'X-Project-Id': 'aegis_default_project'
-                },
+                headers,
                 signal: AbortSignal.timeout(3000)
             });
 
@@ -67,16 +76,25 @@ export const useThreatTelemetry = () => {
     };
 
     useEffect(() => {
+        // Guard clause at the top of hook effect execution
+        if (!activeProjectId || !token) {
+            setLoading(false);
+            return;
+        }
+
         // Run first fetch immediately
         fetchTelemetry();
 
         // Performance-tuned polling routine: refresh exactly every 5 seconds
-        const intervalId = setInterval(fetchTelemetry, 5000);
+        const intervalId = setInterval(() => {
+            if (!activeProjectId || !token) return;
+            fetchTelemetry();
+        }, 5000);
 
         return () => {
             clearInterval(intervalId);
         };
-    }, []);
+    }, [token, activeProjectId]); // Re-poll cleanly when credentials or project changes
 
     return {
         threats,
