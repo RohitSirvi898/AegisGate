@@ -1,5 +1,6 @@
 import type { Request, Response, NextFunction } from 'express';
 import { publishThreatLog } from '../config/queue.js';
+import { ProjectModel } from '../models/project.js';
 
 const AI_ANOMALY_ENGINE_URL = process.env.AI_ANOMALY_ENGINE_URL || 'http://localhost:8000/analyze';
 const AI_INFERENCE_TIMEOUT_MS = parseInt(process.env.AI_INFERENCE_TIMEOUT_MS || '200', 10);
@@ -92,9 +93,22 @@ export const aiFirewall = async (req: Request, res: Response, next: NextFunction
 
         // If anomaly detected, terminate and return HTTP 403 Forbidden
         if (data.is_anomaly) {
+            const headerKey = req.headers['x-aegis-api-key'];
+            let finalProjectId = 'aegis_default_project';
+            if (headerKey && typeof headerKey === 'string') {
+                try {
+                    const activeProject = await ProjectModel.findOne({ apiKey: headerKey });
+                    if (activeProject) {
+                        finalProjectId = activeProject._id.toString();
+                    }
+                } catch (err: any) {
+                    console.error('[AI Firewall Project Resolution Failure] Fallback to default project:', err.message);
+                }
+            }
+
             // Asynchronous, un-awaited background promise to publish threat details with tenant isolation
             publishThreatLog({
-                projectId: AEGIS_PROJECT_ID,
+                projectId: finalProjectId,
                 clientIp: req.ip || req.socket.remoteAddress || 'unknown-client',
                 endpoint: req.originalUrl || req.url || '',
                 method: req.method,

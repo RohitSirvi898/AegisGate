@@ -8,7 +8,6 @@
     "build": "tsc",
     "start": "node dist/index.js",
     "test": "echo \"Error: no test specified\" && exit 1"
-
   },
   "keywords": [],
   "author": "",
@@ -16,6 +15,7 @@
   "type": "module",
   "dependencies": {
     "amqplib": "^2.0.1",
+    "bcryptjs": "^3.0.3",
     "cors": "^2.8.6",
     "dotenv": "^17.4.2",
     "express": "^5.2.1",
@@ -26,6 +26,7 @@
   },
   "devDependencies": {
     "@types/amqplib": "^0.10.8",
+    "@types/bcryptjs": "^2.4.6",
     "@types/cors": "^2.8.19",
     "@types/express": "^5.0.6",
     "@types/jsonwebtoken": "^9.0.10",
