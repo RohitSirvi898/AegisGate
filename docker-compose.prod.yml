@@ -12,6 +12,11 @@ services:
     image: rabbitmq:3-management-alpine
     container_name: aegis_queue
     restart: always
+    healthcheck:
+      test: [ "CMD", "rabbitmq-diagnostics", "check_port_connectivity" ]
+      interval: 5s
+      timeout: 3s
+      retries: 5
     networks:
       - aegis_mesh
 
@@ -35,9 +40,14 @@ services:
       - AI_ANOMALY_ENGINE_URL=http://ai-anomaly-engine:8000/analyze
       - MONGO_URI=${MONGO_URI}
       - REDIS_URL=redis://aegis_cache:6379
+      - RABBITMQ_URL=amqp://aegis-queue:5672
     depends_on:
-      - aegis-cache
-      - ai-anomaly-engine
+      aegis-cache:
+        condition: service_started
+      ai-anomaly-engine:
+        condition: service_started
+      aegis-queue:
+        condition: service_healthy
     networks:
       - aegis_mesh
 
