@@ -14,7 +14,6 @@ import { analyticsRouter } from './routes/analytics.js';
 import { usersRouter } from './routes/users.js';
 
 
-
 dotenv.config();
 
 
@@ -125,6 +124,30 @@ routesConfig.forEach(({ path, target, roles }) => {
     // Secure path execution wrapper: [Rate Limit] -> [JWT/RBAC Check] -> [AI Firewall] -> [Proxy Stream Forwarding]
     app.use(path, authenticateAndAuthorize(roles), aiFirewall, createProxyMiddleware(proxyOptions));
 });
+
+// Any route that is NOT an internal AegisGate route falls down into this shield
+app.use(
+    '/',
+    aiFirewall, // The request is inspected here first
+    createProxyMiddleware({
+        target: process.env.UPSTREAM_TARGET_URL,
+        changeOrigin: true,
+        // Ensure the proxy forwards the original client IP to SmartBill
+        xfwd: true,
+        on: {
+            proxyReq: (proxyReq, req, res) => {
+                // Optional: Strip the Aegis API key before it hits the backend so SmartBill doesn't see it
+                proxyReq.removeHeader('x-aegis-api-key');
+            },
+            error: (err, req, res) => {
+                if (res instanceof ServerResponse && !res.headersSent) {
+                    res.writeHead(502, { 'Content-Type': 'application/json' });
+                    res.end(JSON.stringify({ error: 'Bad Gateway', message: 'Upstream service unreachable.' }));
+                }
+            }
+        }
+    })
+);
 
 app.use((req, res) => {
     res.status(404).json({ error: 'Not Found', message: 'Endpoint path configuration route missing.' });

@@ -39,6 +39,109 @@ graph TD
 
 ---
 
+## ⚡ 5-Minute Developer Quickstart (Drop-In Proxy)
+
+AegisGate acts as a transparent reverse proxy for your existing backend APIs. You simply drop the security shield in front of your microservice container, seal off direct internet access to your backend API, and point your frontend to the proxy port. No code changes are required in your backend services.
+
+### Step 1: The Docker Compose Configuration
+
+Create a `docker-compose.yml` file to run your backend inside a secure mesh network behind the AegisGate proxy. This allows AegisGate to intercept and analyze all traffic, while completely hiding your backend API from public ingress ports.
+
+```yaml
+version: '3.8'
+
+services:
+  # Your existing API backend, completely isolated from public ingress
+  my-backend-api:
+    image: your-developer-username/my-backend-api:latest
+    container_name: my_backend_api
+    expose:
+      - "5000"
+    networks:
+      - secure_mesh
+
+  # AegisGate Edge Proxy shielding your backend
+  aegis-gateway:
+    image: rohitsirvi/aegisgate-core:latest
+    container_name: aegis_gateway
+    ports:
+      - "8080:8080" # Exposed publicly to accept secure frontend queries
+    environment:
+      - PORT=8080
+      - UPSTREAM_TARGET_URL=http://my-backend-api:5000
+      - AI_ANOMALY_ENGINE_URL=http://aegis-ai:8000/analyze
+      - REDIS_URL=redis://aegis-cache:6379
+      - RABBITMQ_URL=amqp://aegis-queue:5672
+    depends_on:
+      - aegis-cache
+      - aegis-queue
+      - aegis-ai
+    networks:
+      - secure_mesh
+
+  # Dynamic Isolation Forest ML Engine
+  aegis-ai:
+    image: rohitsirvi/aegisgate-ai:latest
+    container_name: aegis_ai
+    networks:
+      - secure_mesh
+
+  # Redis Distributed Cache for Rate Limiting
+  aegis-cache:
+    image: redis:7-alpine
+    container_name: aegis_cache
+    networks:
+      - secure_mesh
+
+  # RabbitMQ Broker for Asynchronous Threat Logging
+  aegis-queue:
+    image: rabbitmq:3-management-alpine
+    container_name: aegis_queue
+    networks:
+      - secure_mesh
+
+networks:
+  secure_mesh:
+    driver: bridge
+```
+
+### Step 2: Boot the Shield
+
+Spin up the entire shielded infrastructure with a single orchestration command:
+
+```bash
+docker compose up -d
+```
+
+### Step 3: Route Your Traffic
+
+Generate a cryptographically secure tenant API access key from the AegisGate Cloud Console. Point your frontend fetch requests to the proxy host (`http://localhost:8080`), injecting the custom `x-aegis-api-key` header to secure your traffic automatically:
+
+```javascript
+// Example: Shielded request routed through AegisGate Ingress Proxy
+fetch('http://localhost:8080/api/v1/users', {
+  method: 'POST',
+  headers: {
+    'Content-Type': 'application/json',
+    'x-aegis-api-key': 'ag_live_your_secure_developer_key_here'
+  },
+  body: JSON.stringify({
+    username: 'aegis_developer',
+    email: 'developer@aegisgate.io'
+  })
+})
+.then(response => {
+  if (response.status === 403) {
+    console.error('🛡️ AegisGate Shield: Blocked request due to structural payload anomalies!');
+  }
+  return response.json();
+})
+.then(data => console.log('Parsed API response:', data))
+.catch(error => console.error('Connection failure:', error));
+```
+
+---
+
 ## 📦 Microservices Directory Breakdown
 
 AegisGate is structured as an isolated, modern multi-workspace repository dividing proxy mechanisms (Data Plane), backend engines, and auditing daemons (Control Plane):
