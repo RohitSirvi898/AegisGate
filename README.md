@@ -7,34 +7,70 @@ AegisGate is a high-performance, multi-tenant cybersecurity edge ingress proxy, 
 ## 📐 Unified Cybersecurity System Architecture
 
 ```mermaid
-graph TD
-    Client[HTTP Client / Frontend API Request] -->|Port 8080| Ingress[gateway-core Edge Ingress Proxy]
-    
-    subgraph Ingress Gateway Core Service
-        Ingress -->|1. JWT Check| JWT[Stateless JWT Middleware]
-        JWT -->|2. Rate Limit| RedisCache[(Redis Cache rateLimiter)]
-        RedisCache -->|3. AI Shield| AIFirewall[aiFirewall Middleware]
+%%{init: {'flowchart': {'htmlLabels': true, 'curve': 'bump'}, 'theme': 'base', 'themeVariables': { 'primaryColor': '#1e293b', 'primaryTextColor': '#f8fafc', 'primaryBorderColor': '#334155', 'lineColor': '#94a3b8'}}}%%
+graph LR
+    %% External Entities
+    Client("🌐 Frontend API /<br/>HTTP Client")
+    DashApp("💻 admin-dashboard<br/>React App")
+
+    %% Core Gateway Subgraph
+    subgraph GWCore ["🔐 Edge Ingress (gateway-core)"]
+        direction TB
+        Ingress["Edge Proxy<br/>(Port 8080)"]
+        JWT{"Stateless<br/>JWT Auth"}
+        Redis[("Redis<br/>Rate Limit")]
+        AIFire{"AI Firewall<br/>Middleware"}
+        Proxy["Proxy Forwarder<br/>(Upstream)"]
     end
-    
-    AIFirewall -->|Synchronous ML Scan| FastAPI[ai-anomaly-engine FastAPI]
-    FastAPI -->|Isolation Forest Analysis| AIFirewall
-    
-    AIFirewall -->|If Safe / Valid| ProxyForward[Proxy Forward to Target Upstream]
-    
-    AIFirewall -.->|If Malicious Payload Blocked| QueuePublish[Self-Healing In-Memory Buffer / Publisher]
-    QueuePublish -.->|Detached Event Stream| RabbitMQ[RabbitMQ Event Broker aegis_queue]
-    
-    subgraph Asynchronous Audit Pipeline Control Plane
-        RabbitMQ -.->|AMQP consumer stream| Worker[async-audit-worker Control Plane Daemon]
-        Worker -->|Batch Buffer 10 records / 30s| GeminiAI[Google Gemini LLM Threat Analyzer]
-        GeminiAI -->|Intel, Severity, Vectors, Summaries| Worker
-        Worker -->|O1 Bulk insertMany| MongoAtlas[(MongoDB Atlas persistent Store)]
+
+    %% AI Engine
+    FastAPI["🧠 ai-anomaly-engine<br/>(FastAPI / ISOF)"]
+
+    %% Async Audit Subgraph
+    subgraph AuditPlane ["⚙️ Async Audit Pipeline"]
+        direction TB
+        Queue["In-Memory<br/>Buffer"]
+        RabbitMQ[["RabbitMQ<br/>Broker"]]
+        Worker["async-audit-worker<br/>(Daemon)"]
+        GeminiAI{"Google<br/>Gemini LLM"}
     end
-    
-    subgraph Admin Console Workstation
-        Dashboard[admin-dashboard React Client] -->|Bearer JWT + Project ID Header| Ingress
-        Ingress -->|GET /api/v1/analytics/telemetry| MongoAtlas
-    end
+
+    %% Data Store
+    Mongo[("MongoDB Atlas<br/>(Persistent Store)")]
+
+    %% Flow connections
+    Client -->|Port 8080| Ingress
+    DashApp -->|JWT + Project ID| Ingress
+
+    Ingress --> JWT
+    JWT --> Redis
+    Redis --> AIFire
+
+    %% AI Sync loop
+    AIFire <-->|Synchronous<br/>ML Scan| FastAPI
+
+    %% Good traffic
+    AIFire -->|Safe ✓| Proxy
+
+    %% Bad traffic
+    AIFire -.->|Malicious ✗| Queue
+    Queue -.-> RabbitMQ
+    RabbitMQ -.->|AMQP Stream| Worker
+    Worker <-->|Batch 10/30s| GeminiAI
+    Worker -->|Bulk Insert| Mongo
+
+    %% Dashboard telemetry fetch
+    Ingress -.->|GET /telemetry| Mongo
+
+    %% Styling
+    classDef default fill:#1e293b,stroke:#475569,stroke-width:2px,color:#f8fafc;
+    classDef db fill:#064e3b,stroke:#059669,stroke-width:2px;
+    classDef ai fill:#4c1d95,stroke:#7c3aed,stroke-width:2px;
+    classDef broker fill:#7c2d12,stroke:#ea580c,stroke-width:2px;
+
+    class Redis,Mongo db;
+    class FastAPI,GeminiAI ai;
+    class RabbitMQ broker;
 ```
 
 ---
