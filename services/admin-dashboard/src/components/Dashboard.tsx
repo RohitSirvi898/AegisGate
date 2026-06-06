@@ -1,10 +1,12 @@
 import { useState, useEffect } from 'react';
-import { Shield, Radio, Activity, AlertTriangle, Terminal, Code, Cpu, RefreshCw, Layers, LogOut, ChevronDown } from 'lucide-react';
+import { useNavigate } from 'react-router-dom';
+import { Shield, Radio, Activity, AlertTriangle, Terminal, Code, Cpu, RefreshCw, Layers, LogOut, LogIn, ChevronDown } from 'lucide-react';
 import { useThreatTelemetry, type ThreatRecord } from '../hooks/useThreatTelemetry';
 import { useAuth } from '../context/AuthContext';
 
 export default function Dashboard() {
   const { token, activeProjectId, setActiveProject, logout } = useAuth();
+  const navigate = useNavigate();
   
   // Local state to hold the projects list
   const [projects, setProjects] = useState<any[]>([]);
@@ -12,11 +14,69 @@ export default function Dashboard() {
   const { threats, stats, loading, error, refetch } = useThreatTelemetry(activeProjectId, token);
   const [selectedThreat, setSelectedThreat] = useState<ThreatRecord | null>(null);
   const [isRefreshing, setIsRefreshing] = useState(false);
+
+  // Pre-populated mock data for the simulation console / default view
+  const mockThreats: ThreatRecord[] = [
+    {
+      _id: 'mock_1',
+      clientIp: '192.168.1.105',
+      endpoint: '/api/v1/payments/checkout',
+      method: 'POST',
+      timestamp: new Date(Date.now() - 1000 * 60 * 2).toISOString(),
+      rawBody: '{"cardNumber": "4111********1111", "cvv": "\' OR \'1\'=\'1", "amount": 1000}',
+      attackVector: 'SQL Injection',
+      severity: 'CRITICAL',
+      summary: 'Intercepted malicious SQL characters inside Checkout card number payment handler.'
+    },
+    {
+      _id: 'mock_2',
+      clientIp: '45.227.254.12',
+      endpoint: '/api/v1/auth/login',
+      method: 'POST',
+      timestamp: new Date(Date.now() - 1000 * 60 * 8).toISOString(),
+      rawBody: '{"username": "admin", "password": "../../../etc/passwd"}',
+      attackVector: 'Path Traversal',
+      severity: 'HIGH',
+      summary: 'Malicious directory traversal string identified within authentication login credentials.'
+    },
+    {
+      _id: 'mock_3',
+      clientIp: '89.102.34.88',
+      endpoint: '/api/v1/users/profile',
+      method: 'GET',
+      timestamp: new Date(Date.now() - 1000 * 60 * 15).toISOString(),
+      rawBody: '{"userId": "<script>alert(document.cookie)</script>"}',
+      attackVector: 'Cross-Site Scripting (XSS)',
+      severity: 'HIGH',
+      summary: 'XSS script injection attempt blocked inside profile user ID query parameters.'
+    },
+    {
+      _id: 'mock_4',
+      clientIp: '103.44.112.5',
+      endpoint: '/api/v1/payments/refund',
+      method: 'POST',
+      timestamp: new Date(Date.now() - 1000 * 60 * 25).toISOString(),
+      rawBody: '{"refundId": "ref_9921", "amount": -500}',
+      attackVector: 'Parameter Tampering',
+      severity: 'MEDIUM',
+      summary: 'Negative refund amount value rejected in billing ingress proxy endpoint.'
+    }
+  ];
+
+  const mockStats = {
+    totalBlocks: 148,
+    criticalCount: 42,
+    highCount: 65
+  };
+
+  const displayThreats = token ? threats : mockThreats;
+  const displayStats = token ? stats : mockStats;
   
-  // Compute live security console metrics from database aggregates
-  const totalBlocked = stats.totalBlocks;
-  const criticalCount = stats.criticalCount;
-  const highCount = stats.highCount;
+  // Compute live security console metrics from database aggregates or mock data
+  const totalBlocked = displayStats.totalBlocks;
+  const criticalCount = displayStats.criticalCount;
+  const highCount = displayStats.highCount;
+
 
   // Tab management & Project Provisioning states
   const [activeTab, setActiveTab] = useState<'analytics' | 'provisioning'>('analytics');
@@ -177,13 +237,23 @@ export default function Dashboard() {
             <span>Telemetry Flush</span>
           </button>
 
-          <button
-            onClick={logout}
-            className="bg-red-500/10 hover:bg-red-500/20 text-red-400 border border-red-500/35 hover:border-red-500/50 px-3 py-1.5 rounded transition duration-200 flex items-center gap-2 cursor-pointer font-bold uppercase tracking-wider"
-          >
-            <LogOut className="w-3.5 h-3.5 text-red-400" />
-            <span>Log Out</span>
-          </button>
+          {!token ? (
+            <button
+              onClick={() => navigate('/auth')}
+              className="bg-emerald-500/10 hover:bg-emerald-500/20 text-emerald-400 border border-emerald-500/35 hover:border-emerald-500/50 px-3 py-1.5 rounded transition duration-200 flex items-center gap-2 cursor-pointer font-bold uppercase tracking-wider shadow-[0_0_10px_rgba(16,185,129,0.1)] hover:shadow-[0_0_15px_rgba(16,185,129,0.2)]"
+            >
+              <LogIn className="w-3.5 h-3.5 text-emerald-400" />
+              <span>Sign In</span>
+            </button>
+          ) : (
+            <button
+              onClick={logout}
+              className="bg-red-500/10 hover:bg-red-500/20 text-red-400 border border-red-500/35 hover:border-red-500/50 px-3 py-1.5 rounded transition duration-200 flex items-center gap-2 cursor-pointer font-bold uppercase tracking-wider"
+            >
+              <LogOut className="w-3.5 h-3.5 text-red-400" />
+              <span>Log Out</span>
+            </button>
+          )}
         </div>
       </header>
 
@@ -220,6 +290,23 @@ export default function Dashboard() {
       <main className="flex-1 p-6 flex flex-col gap-6 max-w-7xl w-full mx-auto z-10">
         {activeTab === 'analytics' ? (
           <>
+            {!token && (
+              <div className="bg-emerald-500/5 border border-emerald-500/20 px-4 py-3.5 rounded-xl flex items-center justify-between text-xs text-emerald-400/90 leading-relaxed shadow-[0_0_10px_rgba(16,185,129,0.05)] border-l-4 border-l-emerald-500 gap-4">
+                <div className="flex items-center gap-2.5">
+                  <AlertTriangle className="w-4 h-4 text-emerald-400 shrink-0 animate-pulse" />
+                  <span>
+                    <strong>Console Simulation Mode:</strong> You are viewing pre-populated security telemetry records. Establish an active developer session to configure custom environments, inspect live MongoDB threat logs, and isolate tenancy.
+                  </span>
+                </div>
+                <button
+                  onClick={() => navigate('/auth')}
+                  className="bg-emerald-500/10 hover:bg-emerald-500/20 text-emerald-400 border border-emerald-500/35 px-4 py-2 rounded-lg transition duration-150 font-bold uppercase tracking-wider cursor-pointer shadow-[0_0_8px_rgba(16,185,129,0.1)] whitespace-nowrap"
+                >
+                  Sign In
+                </button>
+              </div>
+            )}
+
             {/* Row 1: Key Telemetry Summary Indicators */}
             <section className="grid grid-cols-1 md:grid-cols-4 gap-4">
               
@@ -324,14 +411,14 @@ export default function Dashboard() {
                         </tr>
                       </thead>
                       <tbody className="divide-y divide-slate-850">
-                        {threats.length === 0 ? (
+                        {displayThreats.length === 0 ? (
                           <tr>
                             <td colSpan={5} className="py-8 text-center text-slate-500 uppercase text-xs tracking-wider">
                               No threat anomalies detected for this project segment.
                             </td>
                           </tr>
                         ) : (
-                          threats.map((threat) => {
+                          displayThreats.map((threat) => {
                             // Determine severity label colors dynamically
                             const severityColors = 
                               threat.severity === 'CRITICAL' ? 'text-red-500 bg-red-500/10 border-red-500/35 shadow-[0_0_8px_rgba(239,68,68,0.15)] font-bold' :
@@ -426,16 +513,34 @@ export default function Dashboard() {
             </section>
           </>
         ) : (
-          <section className="flex-1 max-w-2xl w-full mx-auto bg-[#0c121e]/80 border border-slate-800 rounded-xl p-6 flex flex-col gap-6 shadow-2xl relative">
-            <div className="absolute inset-0 rounded-xl border border-emerald-500/10 pointer-events-none"></div>
-            
-            <div className="border-b border-slate-850 pb-4">
-              <h2 className="text-sm font-bold uppercase tracking-widest text-emerald-400 flex items-center gap-2">
-                <Code className="w-4 h-4" />
-                <span>Multi-Tenant Developer Provisioning</span>
-              </h2>
-              <p className="text-xs text-slate-400 mt-1">Register a new project environment to acquire isolated API keys and separate telemetry metrics streams.</p>
+          !token ? (
+            <div className="flex-1 max-w-2xl w-full mx-auto bg-[#0c121e]/80 border border-slate-800 rounded-xl p-8 flex flex-col items-center justify-center text-center gap-6 shadow-2xl relative min-h-[350px]">
+              <div className="absolute inset-0 rounded-xl border border-emerald-500/10 pointer-events-none"></div>
+              <Shield className="w-16 h-16 text-emerald-500/20 animate-pulse" />
+              <div className="space-y-2">
+                <h3 className="text-lg font-bold uppercase tracking-wider text-emerald-400">Authentication Required</h3>
+                <p className="text-sm text-slate-400 max-w-md mx-auto leading-relaxed">
+                  To provision isolated environments, manage dynamic endpoints, and generate secure developer API keys, you must establish an active session credentials.
+                </p>
+              </div>
+              <button
+                onClick={() => navigate('/auth')}
+                className="bg-emerald-500/10 hover:bg-emerald-500/20 text-emerald-400 font-bold uppercase text-xs tracking-widest border border-emerald-500/35 shadow-[0_0_15px_rgba(16,185,129,0.15)] rounded-lg px-8 py-3.5 transition duration-200 cursor-pointer"
+              >
+                Sign In to Provision
+              </button>
             </div>
+          ) : (
+            <section className="flex-1 max-w-2xl w-full mx-auto bg-[#0c121e]/80 border border-slate-800 rounded-xl p-6 flex flex-col gap-6 shadow-2xl relative">
+              <div className="absolute inset-0 rounded-xl border border-emerald-500/10 pointer-events-none"></div>
+              
+              <div className="border-b border-slate-850 pb-4">
+                <h2 className="text-sm font-bold uppercase tracking-widest text-emerald-400 flex items-center gap-2">
+                  <Code className="w-4 h-4" />
+                  <span>Multi-Tenant Developer Provisioning</span>
+                </h2>
+                <p className="text-xs text-slate-400 mt-1">Register a new project environment to acquire isolated API keys and separate telemetry metrics streams.</p>
+              </div>
 
             {/* Form block */}
             <form onSubmit={handleCreateProject} className="flex flex-col gap-4">
@@ -508,6 +613,7 @@ export default function Dashboard() {
               </div>
             )}
           </section>
+          )
         )}
       </main>
 
