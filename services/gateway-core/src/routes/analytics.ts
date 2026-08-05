@@ -1,6 +1,7 @@
 import { Router, type Request, type Response } from 'express';
 import mongoose from 'mongoose';
 import { ThreatLogModel } from '../models/threatLog.js';
+import { DeadLetterModel } from '../models/deadLetter.js';
 import { ProjectModel } from '../models/project.js';
 import { publishThreatLog } from '../config/queue.js';
 import { requireAuth, type AuthRequest } from '../middleware/requireAuth.js';
@@ -27,7 +28,7 @@ analyticsRouter.get('/telemetry', requireAuth, async (req: AuthRequest, res: Res
         // Perform strict developer ownership validation
         const project = await ProjectModel.findOne({
             _id: projectId,
-            developerId: req.user!.userId
+            developerId: new mongoose.Types.ObjectId(String(req.user!.userId))
         });
 
         if (!project) {
@@ -110,6 +111,91 @@ analyticsRouter.post('/telemetry', async (req: Request, res: Response) => {
             error: 'Internal Server Error',
             message: 'Failed to ingest telemetry payload.'
         });
+    }
+});
+
+/**
+ * GET /dlq
+ * Returns dead-lettered poison messages filtered by project header.
+ */
+analyticsRouter.get('/dlq', requireAuth, async (req: AuthRequest, res: Response) => {
+    try {
+        const projectId = req.headers['x-project-id'] as string;
+        if (!projectId || !mongoose.Types.ObjectId.isValid(projectId)) {
+            return res.status(403).json({ error: 'Forbidden', message: 'Invalid project identifier or access denied.' });
+        }
+
+        const project = await ProjectModel.findOne({
+            _id: projectId,
+            developerId: new mongoose.Types.ObjectId(String(req.user!.userId))
+        });
+
+        if (!project) {
+            return res.status(403).json({ error: 'Forbidden', message: 'Access denied to this project context.' });
+        }
+
+        const logs = await DeadLetterModel.find({ projectId }).sort({ createdAt: -1 }).limit(50);
+        return res.status(200).json(logs);
+    } catch (error: any) {
+        console.error('❌ Failed to fetch DLQ messages:', error.message);
+        return res.status(500).json({ error: 'Internal Server Error', message: 'Failed to retrieve Dead-Letter logs.' });
+    }
+});
+
+/**
+ * POST /dlq/:id/retry
+ * Re-queues a poison message back into the primary threat stream and removes it from DLQ.
+ */
+analyticsRouter.post('/dlq/:id/retry', requireAuth, async (req: AuthRequest, res: Response) => {
+    try {
+        const id = String(req.params.id);
+        if (!id || !mongoose.Types.ObjectId.isValid(id)) {
+            return res.status(400).json({ error: 'Bad Request', message: 'Invalid message ID format.' });
+        }
+
+        const doc = await DeadLetterModel.findById(id);
+        if (!doc) {
+            return res.status(404).json({ error: 'Not Found', message: 'Dead-letter message not found.' });
+        }
+
+        await publishThreatLog({
+            projectId: doc.projectId,
+            clientIp: doc.clientIp,
+            endpoint: doc.endpoint,
+            method: doc.method,
+            timestamp: doc.timestamp.toISOString(),
+            rawBody: doc.rawBody
+        });
+
+        await DeadLetterModel.findByIdAndDelete(id);
+
+        return res.status(200).json({ success: true, message: 'Message re-queued successfully.' });
+    } catch (error: any) {
+        console.error('❌ Failed to re-queue DLQ message:', error.message);
+        return res.status(500).json({ error: 'Internal Server Error', message: 'Failed to re-queue dead-letter message.' });
+    }
+});
+
+/**
+ * DELETE /dlq/:id
+ * Permanently purges a poison message from the Dead-Letter Queue.
+ */
+analyticsRouter.delete('/dlq/:id', requireAuth, async (req: AuthRequest, res: Response) => {
+    try {
+        const id = String(req.params.id);
+        if (!id || !mongoose.Types.ObjectId.isValid(id)) {
+            return res.status(400).json({ error: 'Bad Request', message: 'Invalid message ID format.' });
+        }
+
+        const doc = await DeadLetterModel.findByIdAndDelete(id);
+        if (!doc) {
+            return res.status(404).json({ error: 'Not Found', message: 'Dead-letter message not found.' });
+        }
+
+        return res.status(200).json({ success: true, message: 'Message purged successfully.' });
+    } catch (error: any) {
+        console.error('❌ Failed to purge DLQ message:', error.message);
+        return res.status(500).json({ error: 'Internal Server Error', message: 'Failed to purge dead-letter message.' });
     }
 });
 

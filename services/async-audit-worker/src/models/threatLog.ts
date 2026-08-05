@@ -7,6 +7,7 @@ export interface IThreatLog extends Document {
     method: string;
     timestamp: Date;
     rawBody: string;
+    category?: string;
     attackVector: string;
     severity: string;
     summary: string;
@@ -20,6 +21,7 @@ const ThreatLogSchema: Schema = new Schema({
     method: { type: String, required: true },
     timestamp: { type: Date, required: true },
     rawBody: { type: String, required: false },
+    category: { type: String, required: false },
     attackVector: { type: String, required: true },
     severity: { type: String, required: true },
     summary: { type: String, required: true },

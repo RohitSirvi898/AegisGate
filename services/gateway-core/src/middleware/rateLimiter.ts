@@ -35,9 +35,10 @@ export const rateLimiter = async (req: Request, res: Response, next: NextFunctio
                 timestamp: new Date().toISOString()
             });
         }
-    } catch (error) {
-        console.error(`[Rate Limiter Fault Check] Degrading protection layer gracefully:`, error);
-        // Fault Resilience: Fail-Open Policy to let traffic pass through if Redis cluster drops
+    } catch (error: any) {
+        console.error(`[Rate Limiter Fault Check] Degrading rate limiter layer gracefully:`, error?.message || error);
+        // Fail-Open Resiliency: If Redis is unreachable, attach X-Aegis-Limiter-Degraded header and allow request to proceed
+        res.setHeader('X-Aegis-Limiter-Degraded', 'true');
         next();
     }
 };

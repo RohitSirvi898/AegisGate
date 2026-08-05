@@ -1,4 +1,3 @@
-# pyrefly: ignore [missing-import]
 import numpy as np
 from sklearn.ensemble import IsolationForest
 import logging
@@ -56,6 +55,10 @@ class AnomalyDetector:
         prediction = self.model.predict(x)[0]
         is_anomaly = bool(prediction == -1)
         
+        # Heuristic enhancement: Flag request as anomaly if injection-sensitive character count >= 3.0
+        if len(metrics) > 1 and metrics[1] >= 3.0:
+            is_anomaly = True
+
         # decision_function score (negative value indicates anomaly)
         score = float(self.model.decision_function(x)[0])
         

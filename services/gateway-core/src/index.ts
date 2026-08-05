@@ -12,10 +12,10 @@ import { authRouter } from './routes/auth.js';
 import { projectsRouter } from './routes/projects.js';
 import { analyticsRouter } from './routes/analytics.js';
 import { usersRouter } from './routes/users.js';
-
+import { redisClient } from './config/redis.js';
+import { ProjectModel } from './models/project.js';
 
 dotenv.config();
-
 
 const app = express();
 const PORT = process.env.PORT || 8080;
@@ -92,11 +92,7 @@ const routesConfig = [
     }
 ];
 
-
-
 // Register dynamic proxies coupled with identity firewall checkpoints
-
-
 routesConfig.forEach(({ path, target, roles }) => {
     // Skip /api/v1/users proxy configuration to prioritize the native controller route
     if (path === '/api/v1/users') {
@@ -125,19 +121,128 @@ routesConfig.forEach(({ path, target, roles }) => {
     app.use(path, authenticateAndAuthorize(roles), aiFirewall, createProxyMiddleware(proxyOptions));
 });
 
-// Any route that is NOT an internal AegisGate route falls down into this shield
+/**
+ * Dynamic Upstream Target Resolver Middleware.
+ * Inspects incoming x-aegis-api-key header, queries Redis (project:<api_key>),
+ * falls back to MongoDB with a 5-minute TTL cache, and resolves the project targetUrl.
+ * Returns HTTP 401 Unauthorized JSON response if API key is missing or invalid.
+ */
+const dynamicTargetResolver = async (req: Request, res: Response, next: NextFunction): Promise<void> => {
+    const apiKey = req.headers['x-aegis-api-key'];
+
+    if (!apiKey || typeof apiKey !== 'string' || apiKey.trim() === '') {
+        res.status(401).json({
+            error: 'Unauthorized',
+            message: 'API key is missing or invalid.'
+        });
+        return;
+    }
+
+    const cleanApiKey = apiKey.trim();
+    let targetUrl: string | null = null;
+    let dryRun = true;
+    let enableLLMAudit = true;
+    let slackWebhookUrl = '';
+    let discordWebhookUrl = '';
+    let projectId: string | null = null;
+
+    try {
+        // Query Redis cache for project mapping: project:<api_key>
+        const cached = await redisClient.get(`project:${cleanApiKey}`);
+        if (cached) {
+            try {
+                const parsed = JSON.parse(cached);
+                targetUrl = parsed.targetUrl || parsed.target || null;
+                dryRun = typeof parsed.dryRun === 'boolean' ? parsed.dryRun : true;
+                enableLLMAudit = typeof parsed.enableLLMAudit === 'boolean' ? parsed.enableLLMAudit : true;
+                slackWebhookUrl = parsed.slackWebhookUrl || '';
+                discordWebhookUrl = parsed.discordWebhookUrl || '';
+                projectId = parsed.projectId || null;
+            } catch {
+                targetUrl = cached;
+            }
+        }
+
+        // Cache miss in Redis -> fetch from MongoDB
+        if (!targetUrl) {
+            const project = await ProjectModel.findOne({ apiKey: cleanApiKey });
+            if (!project) {
+                res.status(401).json({
+                    error: 'Unauthorized',
+                    message: 'API key is missing or invalid.'
+                });
+                return;
+            }
+
+            targetUrl = project.targetUrl || process.env.UPSTREAM_TARGET_URL || null;
+            dryRun = project.dryRun ?? true;
+            enableLLMAudit = project.enableLLMAudit ?? true;
+            slackWebhookUrl = project.slackWebhookUrl || '';
+            discordWebhookUrl = project.discordWebhookUrl || '';
+            projectId = project._id.toString();
+
+            if (!targetUrl) {
+                res.status(401).json({
+                    error: 'Unauthorized',
+                    message: 'No target URL configured for this project.'
+                });
+                return;
+            }
+
+            // Cache in Redis with 5-minute (300 seconds) TTL
+            const cachePayload = JSON.stringify({
+                targetUrl,
+                dryRun,
+                enableLLMAudit,
+                slackWebhookUrl,
+                discordWebhookUrl,
+                projectId,
+                projectName: project.projectName
+            });
+
+            try {
+                await redisClient.setex(`project:${cleanApiKey}`, 300, cachePayload);
+            } catch (redisErr: any) {
+                console.error('[Redis Cache Set Error] Failed to cache project mapping:', redisErr.message);
+            }
+        }
+
+        // Attach resolved target URL and metadata onto request object for proxy and firewall
+        (req as any).targetUrl = targetUrl;
+        (req as any).projectId = projectId;
+        (req as any).dryRun = dryRun;
+        (req as any).enableLLMAudit = enableLLMAudit;
+        (req as any).slackWebhookUrl = slackWebhookUrl;
+        (req as any).discordWebhookUrl = discordWebhookUrl;
+
+        next();
+    } catch (error: any) {
+        console.error('[Dynamic Target Resolution Error]:', error?.message || error);
+        res.status(500).json({
+            error: 'Internal Server Error',
+            message: 'Error resolving dynamic project target.'
+        });
+        return;
+    }
+};
+
+// Any route that is NOT an internal AegisGate route falls down into this dynamic multi-tenant SaaS proxy
 app.use(
     '/',
-    aiFirewall, // The request is inspected here first
+    dynamicTargetResolver,
+    aiFirewall, // The request is inspected here next with Dry-Run support
     createProxyMiddleware({
-        target: process.env.UPSTREAM_TARGET_URL,
+        router: async (req) => {
+            return (req as any).targetUrl || process.env.UPSTREAM_TARGET_URL;
+        },
         changeOrigin: true,
-        // Ensure the proxy forwards the original client IP to SmartBill
+        // Ensure the proxy forwards the original client IP to downstream targets
         xfwd: true,
         on: {
             proxyReq: (proxyReq, req, res) => {
-                // Optional: Strip the Aegis API key before it hits the backend so SmartBill doesn't see it
+                // Strip the Aegis API key before forwarding downstream
                 proxyReq.removeHeader('x-aegis-api-key');
+                fixRequestBody(proxyReq, req);
             },
             error: (err, req, res) => {
                 if (res instanceof ServerResponse && !res.headersSent) {
@@ -156,7 +261,7 @@ app.use((req, res) => {
 app.listen(PORT, async () => {
     console.log(`=================================================`);
     console.log(`🛡️  AegisGate Core Proxy Server running on port: ${PORT}`);
-    console.log(`🔐 Edge Auth Protection & RBAC Layers Engaged`);
+    console.log(`🔐 Dynamic SaaS Multi-Tenant Routing & Edge Auth Engaged`);
     console.log(`=================================================`);
 
     // Establish persistent MongoDB connection

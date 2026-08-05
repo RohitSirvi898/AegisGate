@@ -50,14 +50,23 @@ export const authenticateAndAuthorize = (allowedRoles: string[]) => {
             }
 
             // Inject validated user identities directly into the request header streams
-            // This allows internal downstream services to completely trust identity telemetry without re-verifying crypto tokens
             req.headers['x-user-id'] = decodedUser.userId;
             req.headers['x-user-username'] = decodedUser.username;
             req.headers['x-user-role'] = decodedUser.role;
 
             next();
         } catch (error: any) {
-            console.error('[Identity Validation Fault]', error.message);
+            console.error('[Identity Validation Fault]', error?.message || error);
+            // Fail-Closed: If error is an internal database/server error rather than JWT verification error
+            if (error?.name !== 'JsonWebTokenError' && error?.name !== 'TokenExpiredError' && error?.name !== 'NotBeforeError') {
+                res.status(500).json({
+                    error: 'Internal Server Error',
+                    message: 'Authentication Service Unavailable',
+                    timestamp: new Date().toISOString()
+                });
+                return;
+            }
+
             res.status(401).json({
                 error: 'Unauthorized',
                 message: 'The provided access credential validation signature has expired or is cryptographically invalid.',

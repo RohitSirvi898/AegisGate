@@ -1,10 +1,9 @@
-version: '3.8'
-
 services:
-  # 1. Distributed Cache Layer (Rate Limiting)
+  # 1. Distributed Cache Layer (Rate Limiting & Tenant Resolution)
   aegis-cache:
     image: redis:7.2-alpine
     container_name: aegis-cache
+    restart: always
     ports:
       - "6379:6379"
     command: redis-server --appendonly yes
@@ -20,6 +19,7 @@ services:
   aegis-queue:
     image: rabbitmq:3.12-management-alpine
     container_name: aegis-queue
+    restart: always
     ports:
       - "5672:5672"   # AMQP protocol port
       - "15672:15672" # Management Dashboard UI
@@ -31,10 +31,11 @@ services:
       timeout: 5s
       retries: 3
 
-  # 3. Persistent Analytics Store (Threat Logs & LLM reports)
+  # 3. Persistent Analytics Store (Threat Logs & Security Audits)
   aegis-db:
     image: mongo:7.0
     container_name: aegis-db
+    restart: always
     ports:
       - "27017:27017"
     environment:
@@ -47,6 +48,74 @@ services:
       interval: 10s
       timeout: 5s
       retries: 3
+
+  # 4. Inline AI Anomaly Inference Engine
+  ai-anomaly-engine:
+    build:
+      context: ./services/ai-anomaly-engine
+      dockerfile: Dockerfile
+    container_name: ai-anomaly-engine
+    restart: always
+    ports:
+      - "8000:8000"
+
+  # 5. Core Ingress Gateway Proxy & Edge Security Firewall
+  gateway-core:
+    build:
+      context: ./services/gateway-core
+      dockerfile: Dockerfile
+    container_name: gateway-core
+    restart: always
+    ports:
+      - "8080:8080"
+    environment:
+      - PORT=8080
+      - AI_ANOMALY_ENGINE_URL=http://ai-anomaly-engine:8000/analyze
+      - MONGO_URI=${MONGO_URI:-mongodb://aegis_admin:aegis_secure_password@aegis-db:27017/aegis_gate?authSource=admin}
+      - REDIS_HOST=aegis-cache
+      - REDIS_PORT=6379
+      - REDIS_URL=redis://aegis-cache:6379
+      - RABBITMQ_URL=amqp://aegis-queue:5672
+      - JWT_SECRET=${JWT_SECRET:-aegis_fallback_jwt_secret_key_123}
+      - UPSTREAM_TARGET_URL=${UPSTREAM_TARGET_URL:-http://httpbin.org/anything}
+    depends_on:
+      aegis-cache:
+        condition: service_healthy
+      aegis-queue:
+        condition: service_healthy
+      aegis-db:
+        condition: service_healthy
+      ai-anomaly-engine:
+        condition: service_started
+
+  # 6. Asynchronous Intelligence Audit Worker
+  async-audit-worker:
+    build:
+      context: ./services/async-audit-worker
+      dockerfile: Dockerfile
+    container_name: async-audit-worker
+    restart: always
+    environment:
+      - MONGO_URI=${MONGO_URI:-mongodb://aegis_admin:aegis_secure_password@aegis-db:27017/aegis_gate?authSource=admin}
+      - RABBITMQ_URL=amqp://aegis-queue:5672
+      - LLM_API_KEY=${LLM_API_KEY:-}
+    depends_on:
+      aegis-queue:
+        condition: service_healthy
+      aegis-db:
+        condition: service_healthy
+
+  # 7. Admin Analytics Dashboard UI
+  admin-dashboard:
+    build:
+      context: ./services/admin-dashboard
+      dockerfile: Dockerfile
+    container_name: admin-dashboard
+    restart: always
+    ports:
+      - "5173:80"
+    depends_on:
+      - gateway-core
 
 volumes:
   aegis_redis_data:

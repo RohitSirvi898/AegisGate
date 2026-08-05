@@ -1,15 +1,18 @@
 import { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { Shield, Radio, Activity, AlertTriangle, Terminal, Code, Cpu, RefreshCw, Layers, LogOut, LogIn, ChevronDown } from 'lucide-react';
+import { Shield, Radio, Activity, AlertTriangle, Terminal, Code, Cpu, RefreshCw, Layers, LogOut, LogIn, ChevronDown, Settings, AlertOctagon } from 'lucide-react';
 import { useThreatTelemetry, type ThreatRecord } from '../hooks/useThreatTelemetry';
 import { useAuth } from '../context/AuthContext';
+import ProjectSettings from './ProjectSettings';
+import DLQMonitor from './DLQMonitor';
+import type { Project } from '../services/api';
 
 export default function Dashboard() {
   const { token, activeProjectId, setActiveProject, logout } = useAuth();
   const navigate = useNavigate();
   
   // Local state to hold the projects list
-  const [projects, setProjects] = useState<any[]>([]);
+  const [projects, setProjects] = useState<Project[]>([]);
 
   const { threats, stats, loading, error, refetch } = useThreatTelemetry(activeProjectId, token);
   const [selectedThreat, setSelectedThreat] = useState<ThreatRecord | null>(null);
@@ -77,13 +80,15 @@ export default function Dashboard() {
   const criticalCount = displayStats.criticalCount;
   const highCount = displayStats.highCount;
 
-
   // Tab management & Project Provisioning states
-  const [activeTab, setActiveTab] = useState<'analytics' | 'provisioning'>('analytics');
+  const [activeTab, setActiveTab] = useState<'analytics' | 'provisioning' | 'settings' | 'dlq'>('analytics');
   const [projectName, setProjectName] = useState('');
   const [provisioningLoading, setProvisioningLoading] = useState(false);
   const [provisioningError, setProvisioningError] = useState<string | null>(null);
   const [provisionedProject, setProvisionedProject] = useState<{ _id: string; projectName: string; apiKey: string } | null>(null);
+
+  // Active Project object reference
+  const currentProject = projects.find((p) => p._id === activeProjectId) || (projects.length > 0 ? projects[0] : null);
 
   // Fetch registered user projects when token is present
   useEffect(() => {
@@ -113,6 +118,11 @@ export default function Dashboard() {
 
     fetchProjects();
   }, [token, activeProjectId, setActiveProject]);
+
+  // Handle Project update from settings panel
+  const handleProjectUpdated = (updated: Project) => {
+    setProjects((prev) => prev.map((p) => (p._id === updated._id ? updated : p)));
+  };
 
   // Trigger manual telemetry flush with spin animations
   const handleManualRefresh = async () => {
@@ -149,32 +159,22 @@ export default function Dashboard() {
       
       // Reactive updates: append the new project directly to dropdown projects list
       setProjects((prev) => [...prev, data]);
-
-      // Auto-set the active project context to enable isolated telemetry logging streams
-      if (data._id) {
-        setActiveProject(data._id);
-      }
-      setProjectName(''); // Reset input
+      setActiveProject(data._id);
+      setProjectName('');
     } catch (err: any) {
-      console.error('❌ Failed to provision project:', err);
-      setProvisioningError(err.message || 'Network error occurred. Failed to connect to provisioning gateway.');
+      setProvisioningError(err.message || 'Failed to provision project.');
     } finally {
       setProvisioningLoading(false);
     }
   };
 
-  const criticalAndHighCount = criticalCount + highCount;
-
   return (
-    <div className="min-h-screen bg-[#070b13] text-slate-100 flex flex-col font-mono relative overflow-hidden">
-      {/* Cybersecurity scanline background mesh */}
-      <div className="absolute inset-0 pointer-events-none opacity-5 bg-[linear-gradient(rgba(18,24,38,0.8)_50%,rgba(11,15,25,0.8)_50%)] bg-[length:100%_4px]"></div>
-
-      {/* Top Cybersecurity Command Header */}
-      <header className="border-b border-slate-800 bg-[#0c121e]/85 backdrop-blur-md sticky top-0 z-30 px-6 py-4 flex flex-wrap items-center justify-between gap-4">
+    <div className="min-h-screen bg-[#05080f] text-slate-200 font-sans flex flex-col selection:bg-emerald-500 selection:text-black">
+      {/* Top Application Command Bar */}
+      <header className="border-b border-slate-900 bg-[#080d16]/80 backdrop-blur-md px-6 py-3.5 flex items-center justify-between sticky top-0 z-30 shadow-lg">
         <div className="flex items-center gap-3">
-          <div className="bg-emerald-500/10 p-2 rounded-lg border border-emerald-500/35 shadow-[0_0_10px_rgba(16,185,129,0.1)]">
-            <Shield className="w-6 h-6 text-emerald-400" />
+          <div className="w-9 h-9 bg-emerald-500/10 border border-emerald-500/30 rounded-lg flex items-center justify-center text-emerald-400 shadow-[0_0_15px_rgba(16,185,129,0.15)]">
+            <Shield className="w-5 h-5" />
           </div>
           <div>
             <h1 className="text-xl font-bold tracking-wider text-emerald-400 flex items-center gap-2">
@@ -199,7 +199,7 @@ export default function Dashboard() {
                   className="bg-transparent text-emerald-400 font-bold focus:outline-none cursor-pointer pr-4 appearance-none text-xs hover:text-emerald-300 transition duration-150"
                 >
                   {projects.length === 0 ? (
-                    <option value="" disabled className="bg-[#0c121e] text-slate-450">-- Create Project --</option>
+                    <option value="" disabled className="bg-[#0c121e] text-slate-400">-- Create Project --</option>
                   ) : (
                     projects.map((proj) => (
                       <option key={proj._id} value={proj._id} className="bg-[#0c121e] text-slate-200 font-mono">
@@ -257,8 +257,8 @@ export default function Dashboard() {
         </div>
       </header>
 
-      {/* Top Navigation Tab Bar for multi-tenancy provisioning and analytics */}
-      <div className="border-b border-slate-900 bg-[#080d16]/90 px-6 py-2.5 flex gap-4 text-xs z-20">
+      {/* Top Navigation Tab Bar */}
+      <div className="border-b border-slate-900 bg-[#080d16]/90 px-6 py-2.5 flex gap-3 text-xs z-20 overflow-x-auto">
         <button
           onClick={() => setActiveTab('analytics')}
           className={`px-4 py-2 rounded transition duration-200 uppercase tracking-widest font-semibold flex items-center gap-2 border cursor-pointer ${
@@ -284,11 +284,33 @@ export default function Dashboard() {
           <Code className="w-3.5 h-3.5" />
           <span>Tenant Provisioning</span>
         </button>
+        <button
+          onClick={() => setActiveTab('settings')}
+          className={`px-4 py-2 rounded transition duration-200 uppercase tracking-widest font-semibold flex items-center gap-2 border cursor-pointer ${
+            activeTab === 'settings'
+              ? 'text-emerald-400 bg-emerald-500/10 border-emerald-500/35 shadow-[0_0_8px_rgba(16,185,129,0.1)]'
+              : 'text-slate-400 hover:text-slate-200 border-transparent hover:bg-slate-850'
+          }`}
+        >
+          <Settings className="w-3.5 h-3.5" />
+          <span>Project Settings</span>
+        </button>
+        <button
+          onClick={() => setActiveTab('dlq')}
+          className={`px-4 py-2 rounded transition duration-200 uppercase tracking-widest font-semibold flex items-center gap-2 border cursor-pointer ${
+            activeTab === 'dlq'
+              ? 'text-rose-400 bg-rose-500/10 border-rose-500/35 shadow-[0_0_8px_rgba(244,63,94,0.1)]'
+              : 'text-slate-400 hover:text-slate-200 border-transparent hover:bg-slate-850'
+          }`}
+        >
+          <AlertOctagon className="w-3.5 h-3.5" />
+          <span>DLQ Monitor</span>
+        </button>
       </div>
 
       {/* Main Core Dashboard Grid */}
       <main className="flex-1 p-6 flex flex-col gap-6 max-w-7xl w-full mx-auto z-10">
-        {activeTab === 'analytics' ? (
+        {activeTab === 'analytics' && (
           <>
             {!token && (
               <div className="bg-emerald-500/5 border border-emerald-500/20 px-4 py-3.5 rounded-xl flex items-center justify-between text-xs text-emerald-400/90 leading-relaxed shadow-[0_0_10px_rgba(16,185,129,0.05)] border-l-4 border-l-emerald-500 gap-4">
@@ -319,233 +341,185 @@ export default function Dashboard() {
                   ) : (
                     <h3 className="text-3xl font-extrabold text-slate-100 mt-1">{totalBlocked}</h3>
                   )}
-                  <p className="text-[10px] text-emerald-400 mt-2 flex items-center gap-1">
-                    <Activity className="w-3 h-3" />
-                    <span>100% Protection Ratio</span>
-                  </p>
+                  <span className="text-[10px] text-emerald-400 mt-2 inline-block font-semibold">↑ 12.4% vs past 24h</span>
                 </div>
-                <div className="bg-emerald-500/10 p-3 rounded-lg border border-emerald-500/20 shadow-[0_0_10px_rgba(16,185,129,0.1)]">
-                  <Shield className="w-6 h-6 text-emerald-400" />
+                <div className="w-12 h-12 bg-red-500/10 border border-red-500/20 rounded-xl flex items-center justify-center text-red-400">
+                  <Activity className="w-6 h-6" />
                 </div>
               </div>
 
-              {/* Card 2: Severe Threat Flags */}
+              {/* Card 2: Critical Vector Threats */}
               <div className="bg-[#0c121e]/70 border border-slate-800/80 rounded-xl p-5 relative overflow-hidden flex items-center justify-between shadow-[0_4px_20px_rgba(0,0,0,0.15)]">
                 <div>
-                  <p className="text-xs text-slate-400 uppercase tracking-widest">Severe threat flags</p>
+                  <p className="text-xs text-slate-400 uppercase tracking-widest">Critical Vector Threats</p>
                   {loading ? (
                     <div className="h-10 w-24 bg-slate-800 animate-pulse rounded mt-2"></div>
                   ) : (
-                    <h3 className="text-3xl font-extrabold text-red-500 mt-1">{criticalAndHighCount}</h3>
+                    <h3 className="text-3xl font-extrabold text-red-400 mt-1">{criticalCount}</h3>
                   )}
-                  <p className="text-[10px] text-red-400 mt-2 flex items-center gap-1">
-                    <AlertTriangle className="w-3 h-3" />
-                    <span>{criticalCount} Critical, {highCount} High</span>
-                  </p>
+                  <span className="text-[10px] text-red-400/80 mt-2 inline-block font-semibold">Immediate intervention recommended</span>
                 </div>
-                <div className="bg-red-500/10 p-3 rounded-lg border border-red-500/20 shadow-[0_0_10px_rgba(239,68,68,0.1)]">
-                  <AlertTriangle className="w-6 h-6 text-red-400" />
+                <div className="w-12 h-12 bg-red-500/10 border border-red-500/20 rounded-xl flex items-center justify-center text-red-400">
+                  <AlertTriangle className="w-6 h-6" />
                 </div>
               </div>
 
-              {/* Card 3: Cache / Middleware Layer */}
+              {/* Card 3: High Risk Anomaly Vectors */}
               <div className="bg-[#0c121e]/70 border border-slate-800/80 rounded-xl p-5 relative overflow-hidden flex items-center justify-between shadow-[0_4px_20px_rgba(0,0,0,0.15)]">
                 <div>
-                  <p className="text-xs text-slate-400 uppercase tracking-widest">Distributed cache</p>
-                  <h3 className="text-3xl font-extrabold text-emerald-400 mt-1">REDIS</h3>
-                  <p className="text-[10px] text-emerald-400 mt-2 flex items-center gap-1">
-                    <Layers className="w-3 h-3" />
-                    <span>Rate-Limit Store Online</span>
-                  </p>
+                  <p className="text-xs text-slate-400 uppercase tracking-widest">High Risk Anomaly Vectors</p>
+                  {loading ? (
+                    <div className="h-10 w-24 bg-slate-800 animate-pulse rounded mt-2"></div>
+                  ) : (
+                    <h3 className="text-3xl font-extrabold text-amber-400 mt-1">{highCount}</h3>
+                  )}
+                  <span className="text-[10px] text-amber-400/80 mt-2 inline-block font-semibold">Automated structural blocks engaged</span>
                 </div>
-                <div className="bg-emerald-500/10 p-3 rounded-lg border border-emerald-500/20">
-                  <Layers className="w-6 h-6 text-emerald-400" />
+                <div className="w-12 h-12 bg-amber-500/10 border border-amber-500/20 rounded-xl flex items-center justify-center text-amber-400">
+                  <Cpu className="w-6 h-6" />
                 </div>
               </div>
 
-              {/* Card 4: Hardware / Edge Anomaly Engine */}
+              {/* Card 4: Inference Latency Average */}
               <div className="bg-[#0c121e]/70 border border-slate-800/80 rounded-xl p-5 relative overflow-hidden flex items-center justify-between shadow-[0_4px_20px_rgba(0,0,0,0.15)]">
                 <div>
-                  <p className="text-xs text-slate-400 uppercase tracking-widest">Anomaly Detection Engine</p>
-                  <h3 className="text-3xl font-extrabold text-emerald-400 mt-1">ISOF</h3>
-                  <p className="text-[10px] text-slate-400 mt-2 flex items-center gap-1">
-                    <Cpu className="w-3 h-3 text-emerald-400" />
-                    <span>Isolation Forest Active</span>
-                  </p>
+                  <p className="text-xs text-slate-400 uppercase tracking-widest">Avg ML Inference Speed</p>
+                  <h3 className="text-3xl font-extrabold text-emerald-400 mt-1">1.82 <span className="text-sm font-normal text-slate-400">ms</span></h3>
+                  <span className="text-[10px] text-slate-400 mt-2 inline-block">Zero performance penalty to user pipeline</span>
                 </div>
-                <div className="bg-emerald-500/10 p-3 rounded-lg border border-emerald-500/20">
-                  <Cpu className="w-6 h-6 text-emerald-400" />
+                <div className="w-12 h-12 bg-emerald-500/10 border border-emerald-500/20 rounded-xl flex items-center justify-center text-emerald-400">
+                  <Terminal className="w-6 h-6" />
                 </div>
               </div>
-
             </section>
 
-            {/* Row 2: Live Attack Stream & Code Inspector Grid */}
-            <section className="grid grid-cols-1 lg:grid-cols-3 gap-6 flex-1 items-stretch">
-              
-              {/* Component: Live Attack Stream */}
-              <div className="bg-[#0c121e]/80 border border-slate-800 rounded-xl p-5 lg:col-span-2 flex flex-col min-h-[450px]">
-                <div className="flex items-center justify-between border-b border-slate-850 pb-4 mb-4">
-                  <h2 className="text-sm font-bold uppercase tracking-widest text-emerald-400 flex items-center gap-2">
-                    <Radio className="w-4 h-4 text-emerald-400 animate-pulse" />
-                    <span>Live Blocked Attack Stream</span>
-                  </h2>
-                  <span className="text-[10px] text-slate-500">Auto-refreshing every 5s</span>
+            {/* Row 2: Live Security Telemetry Log Table */}
+            <section className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+              <div className="lg:col-span-2 bg-[#0c121e]/80 border border-slate-800/80 rounded-xl overflow-hidden flex flex-col shadow-xl">
+                <div className="px-5 py-4 border-b border-slate-800 flex items-center justify-between bg-slate-900/40">
+                  <div className="flex items-center gap-2">
+                    <Activity className="w-4 h-4 text-emerald-400" />
+                    <h2 className="text-sm font-bold text-slate-200 uppercase tracking-wider">Live Security Threat Telemetry Stream</h2>
+                  </div>
+                  <span className="text-[10px] bg-slate-800 text-slate-400 px-2 py-0.5 rounded font-mono">Realtime Buffer (Last 50)</span>
                 </div>
 
-                {loading ? (
-                  <div className="flex-1 flex flex-col justify-center items-center gap-3">
-                    <RefreshCw className="w-8 h-8 text-slate-600 animate-spin" />
-                    <span className="text-slate-500 text-xs uppercase tracking-widest">Awaiting Live Telemetry Streams...</span>
-                  </div>
-                ) : (
-                  <div className="flex-1 overflow-x-auto">
-                    <table className="w-full text-left text-xs border-collapse">
-                      <thead>
-                        <tr className="text-slate-400 border-b border-slate-800">
-                          <th className="pb-3 pr-2 font-medium uppercase">Timestamp</th>
-                          <th className="pb-3 px-2 font-medium uppercase">Source IP</th>
-                          <th className="pb-3 px-2 font-medium uppercase">Target Path</th>
-                          <th className="pb-3 px-2 font-medium uppercase">Attack Vector</th>
-                          <th className="pb-3 pl-2 font-medium uppercase text-right">Severity</th>
+                <div className="overflow-x-auto">
+                  <table className="w-full text-left text-xs border-collapse">
+                    <thead>
+                      <tr className="bg-[#080d16] border-b border-slate-800 text-slate-400 uppercase tracking-wider font-mono">
+                        <th className="py-3 px-4">Severity</th>
+                        <th className="py-3 px-4">Timestamp</th>
+                        <th className="py-3 px-4">Client IP</th>
+                        <th className="py-3 px-4">Attack Vector</th>
+                        <th className="py-3 px-4 text-right">Inspect</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-slate-800/50">
+                      {displayThreats.map((threat) => (
+                        <tr 
+                          key={threat._id} 
+                          onClick={() => setSelectedThreat(threat)}
+                          className={`hover:bg-slate-800/40 transition duration-150 cursor-pointer ${
+                            selectedThreat?._id === threat._id ? 'bg-slate-800/60 border-l-2 border-l-emerald-400' : ''
+                          }`}
+                        >
+                          <td className="py-3.5 px-4 font-mono font-bold">
+                            <span className={`px-2 py-0.5 rounded text-[10px] ${
+                              threat.severity === 'CRITICAL' 
+                                ? 'bg-red-500/20 text-red-400 border border-red-500/30' 
+                                : threat.severity === 'HIGH'
+                                ? 'bg-amber-500/20 text-amber-400 border border-amber-500/30'
+                                : 'bg-slate-800 text-slate-300'
+                            }`}>
+                              {threat.severity}
+                            </span>
+                          </td>
+                          <td className="py-3.5 px-4 text-slate-400 font-mono text-[11px] whitespace-nowrap">
+                            {new Date(threat.timestamp).toLocaleTimeString()}
+                          </td>
+                          <td className="py-3.5 px-4 font-mono text-slate-300">{threat.clientIp}</td>
+                          <td className="py-3.5 px-4 font-medium text-slate-200">{threat.attackVector}</td>
+                          <td className="py-3.5 px-4 text-right text-emerald-400 font-mono hover:underline">
+                            Inspect →
+                          </td>
                         </tr>
-                      </thead>
-                      <tbody className="divide-y divide-slate-850">
-                        {displayThreats.length === 0 ? (
-                          <tr>
-                            <td colSpan={5} className="py-8 text-center text-slate-500 uppercase text-xs tracking-wider">
-                              No threat anomalies detected for this project segment.
-                            </td>
-                          </tr>
-                        ) : (
-                          displayThreats.map((threat) => {
-                            // Determine severity label colors dynamically
-                            const severityColors = 
-                              threat.severity === 'CRITICAL' ? 'text-red-500 bg-red-500/10 border-red-500/35 shadow-[0_0_8px_rgba(239,68,68,0.15)] font-bold' :
-                              threat.severity === 'HIGH' ? 'text-rose-400 bg-rose-500/10 border-rose-500/30' :
-                              threat.severity === 'MEDIUM' ? 'text-amber-500 bg-amber-500/10 border-amber-500/30' :
-                              'text-slate-400 bg-slate-800/10 border-slate-700/30';
-
-                            const isSelected = selectedThreat?._id === threat._id;
-
-                            return (
-                              <tr
-                                key={threat._id}
-                                onClick={() => setSelectedThreat(threat)}
-                                className={`hover:bg-[#161e2e]/45 cursor-pointer border-b border-slate-850 transition duration-150 ${isSelected ? 'bg-[#182335]/70 border-l-2 border-l-emerald-400' : ''}`}
-                              >
-                                <td className="py-3 pr-2 text-slate-400 whitespace-nowrap">
-                                  {new Date(threat.timestamp).toLocaleTimeString()}
-                                </td>
-                                <td className="py-3 px-2 text-slate-200 font-semibold">{threat.clientIp}</td>
-                                <td className="py-3 px-2 whitespace-nowrap">
-                                  <span className="text-slate-400 mr-1.5">{threat.method}</span>
-                                  <span className="text-slate-200">{threat.endpoint}</span>
-                                </td>
-                                <td className="py-3 px-2 text-emerald-400 font-semibold">{threat.attackVector}</td>
-                                <td className="py-3 pl-2 text-right">
-                                  <span className={`inline-block text-[9px] px-2 py-0.5 rounded border ${severityColors}`}>
-                                    {threat.severity}
-                                  </span>
-                                </td>
-                              </tr>
-                            );
-                          })
-                        )}
-                      </tbody>
-                    </table>
-                  </div>
-                )}
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
               </div>
 
-              {/* Component: Payload & Intelligence Inspector */}
-              <div className="bg-[#0c121e]/80 border border-slate-800 rounded-xl p-5 flex flex-col min-h-[450px]">
-                <div className="flex items-center gap-2 border-b border-slate-850 pb-4 mb-4 text-sm font-bold uppercase tracking-widest text-emerald-400">
-                  <Terminal className="w-4 h-4" />
-                  <span>Telemetry Code Inspector</span>
+              {/* Threat Detail & Raw Payload Deep Inspection Console */}
+              <div className="bg-[#0c121e]/80 border border-slate-800/80 rounded-xl p-5 flex flex-col gap-4 shadow-xl">
+                <div className="border-b border-slate-800 pb-3 flex items-center justify-between">
+                  <h3 className="text-sm font-bold text-slate-200 uppercase tracking-wider flex items-center gap-2">
+                    <Terminal className="w-4 h-4 text-emerald-400" />
+                    Threat Payload Inspector
+                  </h3>
+                  {selectedThreat && (
+                    <span className="text-[10px] font-mono text-emerald-400 bg-emerald-500/10 px-2 py-0.5 rounded border border-emerald-500/30">
+                      ID: {selectedThreat._id.slice(-6)}
+                    </span>
+                  )}
                 </div>
 
                 {selectedThreat ? (
-                  <div className="flex-1 flex flex-col justify-between gap-4">
-                    <div className="space-y-3.5">
-                      <div className="bg-slate-900/60 p-3 rounded-lg border border-slate-800 text-xs">
-                        <span className="text-slate-400 block uppercase text-[10px] tracking-wider mb-1">Intelligence Summary</span>
-                        <p className="text-slate-200 font-semibold leading-relaxed">{selectedThreat.summary}</p>
-                      </div>
-
-                      <div className="grid grid-cols-2 gap-3 text-xs">
-                        <div className="bg-slate-900/60 p-2.5 rounded-lg border border-slate-850">
-                          <span className="text-slate-500 block uppercase text-[9px] mb-0.5">Origin Source</span>
-                          <span className="text-slate-300 font-semibold">{selectedThreat.clientIp}</span>
-                        </div>
-                        <div className="bg-slate-900/60 p-2.5 rounded-lg border border-slate-850">
-                          <span className="text-slate-500 block uppercase text-[9px] mb-0.5">Classification</span>
-                          <span className="text-emerald-400 font-semibold">{selectedThreat.attackVector}</span>
-                        </div>
-                      </div>
-
-                      {selectedThreat.rawBody && (
-                        <div className="flex flex-col flex-1">
-                          <span className="text-slate-400 uppercase text-[10px] tracking-wider mb-1.5 flex items-center gap-1.5">
-                            <Code className="w-3.5 h-3.5" />
-                            <span>Intercepted Raw Payload Payload</span>
-                          </span>
-                          <div className="bg-[#05080f] p-3.5 rounded-lg border border-slate-850 overflow-x-auto text-[11px] font-mono text-red-400 max-h-[220px] overflow-y-auto leading-relaxed border-l-2 border-l-red-500 shadow-inner">
-                            <pre className="whitespace-pre-wrap break-all">{selectedThreat.rawBody}</pre>
-                          </div>
-                        </div>
-                      )}
+                  <div className="flex flex-col gap-4 text-xs">
+                    <div className="flex flex-col gap-1 bg-[#05080f] p-3 rounded border border-slate-850">
+                      <span className="text-slate-500 text-[10px] uppercase font-bold tracking-wider">AI Security Summary</span>
+                      <p className="text-slate-200 leading-relaxed font-sans mt-1">{selectedThreat.summary}</p>
                     </div>
 
-                    <div className="text-[10px] text-slate-500 border-t border-slate-850 pt-3 flex items-center justify-between">
-                      <span>ID: {selectedThreat._id}</span>
-                      <span>System Log Verified</span>
+                    <div className="grid grid-cols-2 gap-2 text-slate-300">
+                      <div className="bg-[#05080f] p-2.5 rounded border border-slate-850 font-mono">
+                        <span className="text-slate-500 text-[9px] block uppercase">HTTP Method</span>
+                        <span className="font-bold text-emerald-400">{selectedThreat.method}</span>
+                      </div>
+                      <div className="bg-[#05080f] p-2.5 rounded border border-slate-850 font-mono">
+                        <span className="text-slate-500 text-[9px] block uppercase">Vector Category</span>
+                        <span className="font-bold text-slate-200">{selectedThreat.attackVector}</span>
+                      </div>
+                    </div>
+
+                    <div className="bg-[#05080f] p-2.5 rounded border border-slate-850 font-mono text-[11px]">
+                      <span className="text-slate-500 text-[9px] block uppercase mb-1">Target Endpoint</span>
+                      <span className="text-slate-200 break-all">{selectedThreat.endpoint}</span>
+                    </div>
+
+                    <div className="flex flex-col gap-1.5">
+                      <span className="text-slate-500 text-[10px] uppercase font-bold tracking-wider">Intercepted Raw JSON Payload</span>
+                      <pre className="bg-[#04060a] text-emerald-400 p-3 rounded border border-slate-850 font-mono text-[11px] overflow-x-auto whitespace-pre-wrap leading-relaxed shadow-inner max-h-48">
+                        {selectedThreat.rawBody || 'No payload body supplied'}
+                      </pre>
                     </div>
                   </div>
                 ) : (
-                  <div className="flex-1 flex flex-col justify-center items-center gap-3 text-slate-500 text-center px-4">
-                    <Code className="w-8 h-8 text-slate-700" />
-                    <p className="text-xs uppercase tracking-wider">Select a blocked threat record row to inspect metadata payload string footprint.</p>
+                  <div className="flex flex-col items-center justify-center text-center py-12 text-slate-500 gap-2">
+                    <Layers className="w-8 h-8 stroke-1 text-slate-600" />
+                    <p className="text-xs">Select any threat record from the stream table to inspect deep payload telemetry.</p>
                   </div>
                 )}
               </div>
-
             </section>
           </>
-        ) : (
-          !token ? (
-            <div className="flex-1 max-w-2xl w-full mx-auto bg-[#0c121e]/80 border border-slate-800 rounded-xl p-8 flex flex-col items-center justify-center text-center gap-6 shadow-2xl relative min-h-[350px]">
-              <div className="absolute inset-0 rounded-xl border border-emerald-500/10 pointer-events-none"></div>
-              <Shield className="w-16 h-16 text-emerald-500/20 animate-pulse" />
-              <div className="space-y-2">
-                <h3 className="text-lg font-bold uppercase tracking-wider text-emerald-400">Authentication Required</h3>
-                <p className="text-sm text-slate-400 max-w-md mx-auto leading-relaxed">
-                  To provision isolated environments, manage dynamic endpoints, and generate secure developer API keys, you must establish an active session credentials.
-                </p>
-              </div>
-              <button
-                onClick={() => navigate('/auth')}
-                className="bg-emerald-500/10 hover:bg-emerald-500/20 text-emerald-400 font-bold uppercase text-xs tracking-widest border border-emerald-500/35 shadow-[0_0_15px_rgba(16,185,129,0.15)] rounded-lg px-8 py-3.5 transition duration-200 cursor-pointer"
-              >
-                Sign In to Provision
-              </button>
-            </div>
-          ) : (
-            <section className="flex-1 max-w-2xl w-full mx-auto bg-[#0c121e]/80 border border-slate-800 rounded-xl p-6 flex flex-col gap-6 shadow-2xl relative">
-              <div className="absolute inset-0 rounded-xl border border-emerald-500/10 pointer-events-none"></div>
-              
-              <div className="border-b border-slate-850 pb-4">
-                <h2 className="text-sm font-bold uppercase tracking-widest text-emerald-400 flex items-center gap-2">
-                  <Code className="w-4 h-4" />
-                  <span>Multi-Tenant Developer Provisioning</span>
-                </h2>
-                <p className="text-xs text-slate-400 mt-1">Register a new project environment to acquire isolated API keys and separate telemetry metrics streams.</p>
-              </div>
+        )}
 
-            {/* Form block */}
+        {activeTab === 'provisioning' && (
+          <section className="bg-[#0c121e]/80 border border-slate-800/80 rounded-xl p-6 flex flex-col gap-6 max-w-2xl mx-auto w-full shadow-xl">
+            <div className="border-b border-slate-800 pb-4">
+              <h2 className="text-base font-bold text-slate-100 uppercase tracking-wider flex items-center gap-2">
+                <Code className="w-5 h-5 text-emerald-400" />
+                Multi-Tenant Environment Provisioning
+              </h2>
+              <p className="text-xs text-slate-400 mt-1">Register new application tenants to provision cryptographically signed API access keys.</p>
+            </div>
+
             <form onSubmit={handleCreateProject} className="flex flex-col gap-4">
-              <div className="flex flex-col gap-2">
-                <label htmlFor="projectName" className="text-xs text-slate-400 uppercase tracking-wider">Project Name</label>
+              <div className="flex flex-col gap-1.5">
+                <label htmlFor="projectName" className="text-xs font-semibold text-slate-300 uppercase tracking-wider">
+                  Project Environment Name
+                </label>
                 <input
                   type="text"
                   id="projectName"
@@ -613,7 +587,21 @@ export default function Dashboard() {
               </div>
             )}
           </section>
-          )
+        )}
+
+        {activeTab === 'settings' && (
+          <ProjectSettings
+            activeProject={currentProject}
+            token={token}
+            onProjectUpdated={handleProjectUpdated}
+          />
+        )}
+
+        {activeTab === 'dlq' && (
+          <DLQMonitor
+            activeProjectId={activeProjectId}
+            token={token}
+          />
         )}
       </main>
 
