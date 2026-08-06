@@ -1,6 +1,6 @@
 # 🛡️ AegisGate - Multi-Tenant Edge Security Shield & AI Anomaly Detection Pipeline
 
-AegisGate is a high-performance, multi-tenant cybersecurity edge ingress proxy, stateless JWT authentication gateway, Redis-driven rate limiter, and machine-learning AI firewall. Backed by a decoupled asynchronous event-driven threat analysis pipeline (RabbitMQ, Google Gemini LLM) and an O(1) bulk MongoDB audit worker, it streams live telemetry into a cybersecurity-themed React console workspace.
+AegisGate is a high-performance, sub-100ms multi-tenant cybersecurity edge ingress proxy, stateless JWT authentication gateway, atomic O(1) Redis-driven rate limiter, and machine-learning AI firewall. Featuring 300s TTL Redis hot-path lookup caching, non-blocking asynchronous RabbitMQ telemetry logging, and HTTP socket connection pooling (`keepAlive: true`, `maxSockets: 100`), it streams live security intelligence into a cybersecurity-themed React console workspace.
 
 ---
 
@@ -196,12 +196,14 @@ aegis-gate/
 └── README.md                   # System Operations Manual
 ```
 
-### 1. `gateway-core` Ingress Ingress Gateway
+### 1. `gateway-core` Ingress Gateway
 * **Stateless Auth Routing (`src/routes/auth.ts`)**: Registers and authenticates developers (`POST /api/v1/auth/register`, `POST /api/v1/auth/login`) securely hashing passwords with `bcryptjs` (salt rounds 10) and issuing stateless `jsonwebtoken` (JWT) authorization structures.
-* **Environment Provisioner (`src/routes/projects.ts`)**: Generates cryptographically secure API keys prefixed with `ag_live_` (`POST /api/v1/projects`), automatically linking project configurations to authenticated developer accounts.
-* **Telemetry & Ingestion (`src/routes/analytics.ts`)**: Secures analytics endpoints strictly verifying project developer ownership before querying MongoDB logs, and validating ObjectIds cleanly to prevent server crashes.
-* **AI Firewall Middleware (`src/middleware/aiFirewall.ts`)**: Synchronously extracts structural metrics of query queries (body length, injection-sensitive special characters, curly nesting, JSON key colons) and feeds them into the FastAPI anomaly engine before forwarding proxy stream headers downstream.
-* **Self-Healing Message Broker (`src/config/queue.ts`)**: Implements an async RabbitMQ connection loop with a recursive 5-second retry backoff. If RabbitMQ is offline during anomaly detection, blocks thread blocks by automatically caching payloads into a transient in-memory array, draining them automatically onto the event stream once broker connections restore.
+* **Environment Provisioner (`src/routes/projects.ts`)**: Generates cryptographically secure API keys prefixed with `ag_live_` (`POST /api/v1/projects`), automatically linking project configurations to authenticated developer accounts and invalidating cached Redis keys on updates.
+* **Redis Hot-Path Target Resolver (`src/index.ts`)**: Caches API key validations and project metadata (`targetUrl`, `dryRun`, `enableLLMAudit`, webhooks) in Redis (`aegis-cache`) with a 300s TTL, eliminating direct MongoDB reads from middleware hot paths.
+* **Atomic O(1) Rate Limiter (`src/middleware/rateLimiter.ts` & `src/config/redis.ts`)**: Utilizes an atomic Redis `rateLimitIncr` Lua script (`INCR` + `EXPIRE`) to enforce per-IP rate bounds in O(1) time without DB access or concurrency ZSET collisions.
+* **HTTP Connection Pooling Agent (`src/index.ts`)**: Configures `http.Agent` and `https.Agent` (`keepAlive: true`, `maxSockets: 100`) in `http-proxy-middleware` to reuse TCP sockets and minimize latency when proxying downstream.
+* **Non-Blocking Telemetry & AI Firewall (`src/middleware/aiFirewall.ts`)**: Extracts structural payload metrics (length, injection characters, colon keys, brace depth) for anomaly evaluation, and dispatches threat telemetry asynchronously (`setImmediate`) via RabbitMQ without blocking HTTP response cycles.
+* **Self-Healing Message Broker (`src/config/queue.ts`)**: Implements an async RabbitMQ connection loop with a recursive 5-second retry backoff and Dead-Letter Exchange (DLX). Automatically buffers pending telemetry into memory if RabbitMQ is temporarily offline.
 
 ### 2. `ai-anomaly-engine` Anomaly Machine Learning Inspector
 * **Engine Type**: Built as a lightweight pythonic FastAPI microservice.
