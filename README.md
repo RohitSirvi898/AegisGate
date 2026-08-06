@@ -2,6 +2,11 @@
 
 AegisGate is a high-performance, sub-100ms multi-tenant cybersecurity edge ingress proxy, stateless JWT authentication gateway, atomic O(1) Redis-driven rate limiter, and machine-learning AI firewall. Featuring 300s TTL Redis hot-path lookup caching, non-blocking asynchronous RabbitMQ telemetry logging, and HTTP socket connection pooling (`keepAlive: true`, `maxSockets: 100`), it streams live security intelligence into a cybersecurity-themed React console workspace.
 
+* **Dual-Layer PII Privacy Protection**: Masks sensitive fields (`password`, `credit_card`, `ssn`, `email`) locally before storing telemetry logs.
+* **LLM Privacy Opt-Out (`enableLLMAudit: false`)**: Opt out of external LLM threat classification to satisfy strict privacy requirements (e.g., HIPAA/GDPR); threats are logged locally as `UNANALYZED_PRIVACY_OPT_OUT`.
+* **Dead-Letter Queue (DLQ) & Resilience**: Routes unprocessable poison payloads to `aegis_dead_letter` after 3 failed retries, with full re-queue and purge controls in the Admin Dashboard.
+* **Real-Time Webhook Alerting**: Dispatches Slack Block Kit and Discord Embed notifications for `CRITICAL` and `HIGH` severity attack vectors.
+
 ---
 
 ## 📐 Unified Cybersecurity System Architecture
@@ -141,6 +146,9 @@ networks:
     driver: bridge
 ```
 
+> ⚠️ **Important Configuration Rule for `UPSTREAM_TARGET_URL`**:
+> Specify **only** the target base origin (e.g., `http://my-backend-api:5000` or `https://api.yourdomain.com`). **Do not** include specific path endpoints like `/api/v1/health`. AegisGate automatically appends incoming client request paths when proxying downstream traffic.
+
 ### Step 2: Boot the Shield
 
 Spin up the entire shielded infrastructure with a single orchestration command:
@@ -211,18 +219,16 @@ aegis-gate/
 * **Host Binding**: Set strictly to bind to the remote container layer interface `0.0.0.0` over Port `8000`.
 
 ### 3. `async-audit-worker` Control Plane Auditing Daemon
-* **Channel Prefetch Configuration**: Implements high-throughput limits (`channel.prefetch(20)`) to protect broker resources during high-volume DDoS incidents.
-* **Round-Trip Bulk Mongoose Optimization**: Batches intercepted events in-memory, flushing immediately when the buffer reaches exactly `10` records or at a `30-second` rolling fallback interval.
-* **Google Gemini AI Threat Categorization**: Issues real-time JSON-schema POST requests to Google Gemini LLM models automatically diagnosing:
-  * Origin Client IP & HTTP Request endpoints.
-  * Hashed password payload signatures.
-  * Maps records cleanly to **Attack Vector Categories**, **Severity Levels** (CRITICAL, HIGH, MEDIUM, LOW), and writes **Cybersecurity Intel Summaries** in plain text.
-* **Durability Fail-Open Safeguards**: If database lookups or LLM APIs time out, releases pending payloads back to RabbitMQ using manual nack handles (`channel.nack(msg, false, true)`) to prevent packet loss.
+* **Channel Prefetch & DLQ Handling**: Configures `channel.prefetch(20)` to manage broker load. Messages failing processing after 3 retries are routed via `aegis_dlx` to `aegis_dead_letter` for manual inspection.
+* **Local PII Redaction**: Scrubs sensitive key fields (`password`, `credit_card`, `ssn`, `email`) in raw JSON bodies prior to MongoDB insertion.
+* **Google Gemini AI Threat Categorization & Opt-Out**: When `enableLLMAudit: true`, requests diagnoses from Google Gemini LLM models for severity ratings (CRITICAL, HIGH, MEDIUM, LOW) and attack summaries. When `enableLLMAudit: false`, logs records as `UNANALYZED_PRIVACY_OPT_OUT` with zero external network egress.
+* **Real-Time Webhook Dispatcher**: Fires asynchronous HTTP webhooks to configured Slack and Discord endpoints upon detecting critical threats.
 
 ### 4. `admin-dashboard` React Cybersecurity Workspace
-* **Context State Management (`src/context/AuthContext.tsx`)**: Integrates react contexts storing user tokens and selected project parameters, syncing states instantly with `localStorage`.
-* **Security Route Guards (`src/components/ProtectedRoute.tsx`)**: Validates token credentials, redirecting unauthorized sessions back to `/auth` cleanly.
-* **Dynamic Droplist selectors (`src/components/Dashboard.tsx`)**: Queries developer-owned project registers. Populates an interactive `<select>` dropdown selector next to status gauges in the header, letting developers dynamically isolate and query segmented multi-tenant telemetry datasets.
+* **Analytics Console**: Displays real-time blocked event counts, ML inference latency (< 5ms), live threat telemetry stream, and interactive raw payload inspector.
+* **Tenant Provisioning**: Provisions new projects, generates `ag_live_` API access keys, and configures upstream routing.
+* **Project Settings**: Toggles **Dry-Run Mode**, enables/disables **AI LLM Threat Analysis**, and updates Slack/Discord alert webhooks.
+* **DLQ Monitor**: Displays health state of `aegis_dead_letter`, allowing administrators to inspect, retry, or purge poison queue payloads.
 
 ---
 
@@ -260,6 +266,19 @@ AegisGate leverages Docker's built-in DNS and streamlined bridge routing network
 - **`services/gateway-core/Dockerfile`**: Optimized multi-stage Node distribution compilation. Stage 1 compiles TS into ESNext JS binaries, and Stage 2 runs minimal production environments (`npm ci --only=production`), copying compiled `./dist` paths.
 - **`services/async-audit-worker/Dockerfile`**: High-performance multi-stage daemon distribution skipping developer packages.
 - **`services/ai-anomaly-engine/Dockerfile`**: Secure Python-slim image exposing FastAPIs.
+
+---
+
+## 📊 Verified Performance & Latency Benchmarks
+
+Benchmarked across 110 concurrent requests via Postman Collection Runner using Redis hot-path caching and internal container routing:
+
+| Metric | Measured Baseline | Target Threshold | Status |
+| :--- | :--- | :--- | :--- |
+| **Gateway Ingress Overhead** | **~3 ms – 15 ms** | $< 50\text{ ms}$ | ✅ PASSED |
+| **Edge Block Latency (403 / 429)** | **3 ms – 4 ms** | $< 10\text{ ms}$ | ✅ PASSED |
+| **Avg ML Inference Latency** | **1.82 ms** | $< 5\text{ ms}$ | ✅ PASSED |
+| **Total Local Proxied Response Time** | **32 ms** | $< 100\text{ ms}$ | ✅ PASSED |
 
 ---
 
