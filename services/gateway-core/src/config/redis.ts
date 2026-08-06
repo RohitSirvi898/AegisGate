@@ -8,7 +8,13 @@ declare module 'ioredis' {
             now: string | number,
             windowStart: string | number,
             maxLimit: string | number,
-            expiryInSeconds: string | number
+            expiryInSeconds: string | number,
+            memberId?: string
+        ): Promise<number>;
+        rateLimitIncr(
+            key: string,
+            expiryInSeconds: string | number,
+            maxLimit: string | number
         ): Promise<number>;
     }
 }
@@ -37,14 +43,30 @@ export const redisClient = REDIS_URL
       });
 
 
-// Register the custom Lua script rate limiting command
+// Register atomic rate limiting commands
+redisClient.defineCommand('rateLimitIncr', {
+    numberOfKeys: 1,
+    lua: `
+        local current = redis.call("INCR", KEYS[1])
+        if tonumber(current) == 1 then
+            redis.call("EXPIRE", KEYS[1], ARGV[1])
+        end
+        if tonumber(current) > tonumber(ARGV[2]) then
+            return 0
+        else
+            return 1
+        end
+    `
+});
+
 redisClient.defineCommand('slidingWindowRateLimit', {
     numberOfKeys: 1,
     lua: `
         redis.call("ZREMRANGEBYSCORE", KEYS[1], 0, ARGV[2])
         local current_hits = redis.call("ZCARD", KEYS[1])
         if tonumber(current_hits) < tonumber(ARGV[3]) then
-            redis.call("ZADD", KEYS[1], ARGV[1], ARGV[1])
+            local member = ARGV[5] or (ARGV[1] .. ":" .. tostring(current_hits + 1))
+            redis.call("ZADD", KEYS[1], ARGV[1], member)
             redis.call("EXPIRE", KEYS[1], ARGV[4])
             return 1
         else

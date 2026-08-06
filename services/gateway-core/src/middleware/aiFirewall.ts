@@ -1,6 +1,5 @@
 import type { Request, Response, NextFunction } from 'express';
 import { publishThreatLog } from '../config/queue.js';
-import { ProjectModel } from '../models/project.js';
 import { redisClient } from '../config/redis.js';
 
 const AI_ANOMALY_ENGINE_URL = process.env.AI_ANOMALY_ENGINE_URL || 'http://localhost:8000/analyze';
@@ -102,7 +101,7 @@ export const aiFirewall = async (req: Request, res: Response, next: NextFunction
 
             if (headerKey && typeof headerKey === 'string' && (req as any).dryRun === undefined) {
                 try {
-                    // Check Redis cache first
+                    // Check Redis cache only (no DB read in middleware hot path)
                     const cached = await redisClient.get(`project:${headerKey}`);
                     if (cached) {
                         const parsed = JSON.parse(cached);
@@ -115,15 +114,6 @@ export const aiFirewall = async (req: Request, res: Response, next: NextFunction
                         }
                         slackWebhookUrl = parsed.slackWebhookUrl || '';
                         discordWebhookUrl = parsed.discordWebhookUrl || '';
-                    } else {
-                        const activeProject = await ProjectModel.findOne({ apiKey: headerKey });
-                        if (activeProject) {
-                            finalProjectId = activeProject._id.toString();
-                            dryRun = activeProject.dryRun ?? true;
-                            enableLLMAudit = activeProject.enableLLMAudit ?? true;
-                            slackWebhookUrl = activeProject.slackWebhookUrl || '';
-                            discordWebhookUrl = activeProject.discordWebhookUrl || '';
-                        }
                     }
                 } catch (err: any) {
                     console.error('[AI Firewall Project Resolution Failure] Fallback to default project:', err.message);
@@ -132,19 +122,21 @@ export const aiFirewall = async (req: Request, res: Response, next: NextFunction
                 finalProjectId = (req as any).projectId;
             }
 
-            // Always publish threat log payload to RabbitMQ for telemetry / dashboard / webhooks
-            publishThreatLog({
-                projectId: finalProjectId,
-                clientIp: req.ip || req.socket.remoteAddress || 'unknown-client',
-                endpoint: req.originalUrl || req.url || '',
-                method: req.method,
-                timestamp: new Date().toISOString(),
-                rawBody: bodyStr,
-                enableLLMAudit,
-                slackWebhookUrl,
-                discordWebhookUrl
-            }).catch((err) => {
-                console.error('[Background Threat Publish Fault] Fail-open trace:', err);
+            // Asynchronously dispatch threat log payload via RabbitMQ non-blockingly
+            setImmediate(() => {
+                publishThreatLog({
+                    projectId: finalProjectId,
+                    clientIp: req.ip || req.socket.remoteAddress || 'unknown-client',
+                    endpoint: req.originalUrl || req.url || '',
+                    method: req.method,
+                    timestamp: new Date().toISOString(),
+                    rawBody: bodyStr,
+                    enableLLMAudit,
+                    slackWebhookUrl,
+                    discordWebhookUrl
+                }).catch((err) => {
+                    console.error('[Background Threat Publish Fault] Fail-open trace:', err);
+                });
             });
 
             if (dryRun) {

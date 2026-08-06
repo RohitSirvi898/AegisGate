@@ -7,19 +7,15 @@ const MAX_REQUEST_LIMIT = 100; // Allow 100 requests per minute per IP
 export const rateLimiter = async (req: Request, res: Response, next: NextFunction): Promise<void> => {
     // Gracefully fallback to standard loopback IP if header is missing
     const clientIp = req.ip || req.socket.remoteAddress || 'unknown-client';
-    const redisKey = `rate_limit:${clientIp}`;
-
-    const now = Date.now();
-    const windowStart = now - (WINDOW_SIZE_IN_SECONDS * 1000);
+    const currentWindow = Math.floor(Date.now() / (WINDOW_SIZE_IN_SECONDS * 1000));
+    const redisKey = `rate_limit:${clientIp}:${currentWindow}`;
 
     try {
-        // Call the custom script awaitable command
-        const result = await redisClient.slidingWindowRateLimit(
+        // Atomic Redis INCR + EXPIRE rate limiting command
+        const result = await redisClient.rateLimitIncr(
             redisKey,
-            now,
-            windowStart,
-            MAX_REQUEST_LIMIT,
-            WINDOW_SIZE_IN_SECONDS
+            WINDOW_SIZE_IN_SECONDS,
+            MAX_REQUEST_LIMIT
         );
 
         if (result === 1) {

@@ -1,3 +1,5 @@
+import http from 'http';
+import https from 'https';
 import express, { type Request, type Response, type NextFunction } from 'express';
 import { createProxyMiddleware, fixRequestBody, type Options } from 'http-proxy-middleware';
 import dotenv from 'dotenv';
@@ -21,6 +23,17 @@ const app = express();
 const PORT = process.env.PORT || 8080;
 const AI_ANOMALY_ENGINE_URL = process.env.AI_ANOMALY_ENGINE_URL || 'http://localhost:8000/analyze';
 
+// Configure HTTP and HTTPS Connection Pooling Agents (keepAlive: true, maxSockets: 100)
+const httpAgent = new http.Agent({ keepAlive: true, maxSockets: 100 });
+const httpsAgent = new https.Agent({ keepAlive: true, maxSockets: 100 });
+
+const getProxyAgent = (targetUrl?: string) => {
+    if (targetUrl && targetUrl.startsWith('https:')) {
+        return httpsAgent;
+    }
+    return httpAgent;
+};
+
 // Enable CORS globally to support frontend calls
 app.use(cors());
 
@@ -36,9 +49,9 @@ app.use(rateLimiter);
 
 /**
  * Dedicated Asynchronous Telemetry Logging Middleware.
- * Captures request footprints and sends telemetry data to the Python AI Anomaly Engine.
+ * Captures request footprints and sends telemetry data asynchronously to the Python AI Anomaly Engine.
  */
-const telemetryLogger = async (req: Request, res: Response, next: NextFunction): Promise<void> => {
+const telemetryLogger = (req: Request, res: Response, next: NextFunction): void => {
     const pathLength = (req.originalUrl || req.url || '').length;
     const methodLength = (req.method || '').length;
     const timestampFraction = (Date.now() % 10000) / 10000;
@@ -54,14 +67,15 @@ const telemetryLogger = async (req: Request, res: Response, next: NextFunction):
         ]
     };
 
-    // Asynchronous fire-and-forget background HTTP call to AI Anomaly Engine uvicorn server
-    // Guided by an absolute Fail-Open Policy to ensure it never delays or drops user responses
-    fetch(AI_ANOMALY_ENGINE_URL, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(telemetryPayload)
-    }).catch((err) => {
-        console.error('[Telemetry Fail-Open Bypass] Silently bypassed anomaly engine exception:', (err as Error).message);
+    // Asynchronous non-blocking background HTTP call to AI Anomaly Engine uvicorn server
+    setImmediate(() => {
+        fetch(AI_ANOMALY_ENGINE_URL, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(telemetryPayload)
+        }).catch((err) => {
+            console.error('[Telemetry Fail-Open Bypass] Silently bypassed anomaly engine exception:', (err as Error).message);
+        });
     });
 
     next();
@@ -102,6 +116,7 @@ routesConfig.forEach(({ path, target, roles }) => {
     const proxyOptions: Options = {
         target,
         changeOrigin: true,
+        agent: getProxyAgent(target),
         pathRewrite: { [`^${path}`]: '' },
         on: {
             error: (err, req, res) => {
@@ -232,6 +247,7 @@ app.use(
     dynamicTargetResolver,
     aiFirewall, // The request is inspected here next with Dry-Run support
     createProxyMiddleware({
+        agent: httpAgent,
         router: async (req) => {
             return (req as any).targetUrl || process.env.UPSTREAM_TARGET_URL;
         },

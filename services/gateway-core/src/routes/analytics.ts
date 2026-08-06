@@ -5,6 +5,7 @@ import { DeadLetterModel } from '../models/deadLetter.js';
 import { ProjectModel } from '../models/project.js';
 import { publishThreatLog } from '../config/queue.js';
 import { requireAuth, type AuthRequest } from '../middleware/requireAuth.js';
+import { redisClient } from '../config/redis.js';
 
 const analyticsRouter = Router();
 
@@ -76,17 +77,38 @@ analyticsRouter.post('/telemetry', async (req: Request, res: Response) => {
             });
         }
 
-        // Query Project collection using Mongoose Project model to validate the key
-        const project = await ProjectModel.findOne({ apiKey: apiKeyHeader });
-        if (!project) {
-            return res.status(401).json({
-                error: 'Unauthorized',
-                message: 'Invalid or revoked Aegis API Key.'
-            });
+        // Query Redis cache first for API key validation
+        let projectId: string | null = null;
+        try {
+            const cached = await redisClient.get(`project:${apiKeyHeader}`);
+            if (cached) {
+                const parsed = JSON.parse(cached);
+                projectId = parsed.projectId || null;
+            }
+        } catch (err: any) {
+            console.error('[Telemetry Redis Cache Miss Error]:', err.message);
         }
 
-        // Extract internal database project ID and stamp payload
-        const projectId = String(project._id);
+        if (!projectId) {
+            const project = await ProjectModel.findOne({ apiKey: apiKeyHeader });
+            if (!project) {
+                return res.status(401).json({
+                    error: 'Unauthorized',
+                    message: 'Invalid or revoked Aegis API Key.'
+                });
+            }
+            projectId = String(project._id);
+            const cachePayload = JSON.stringify({
+                targetUrl: project.targetUrl || process.env.UPSTREAM_TARGET_URL || '',
+                dryRun: project.dryRun ?? true,
+                enableLLMAudit: project.enableLLMAudit ?? true,
+                slackWebhookUrl: project.slackWebhookUrl || '',
+                discordWebhookUrl: project.discordWebhookUrl || '',
+                projectId,
+                projectName: project.projectName
+            });
+            await redisClient.setex(`project:${apiKeyHeader}`, 300, cachePayload).catch(() => {});
+        }
 
         const telemetryPayload = {
             projectId,
