@@ -2,7 +2,7 @@ import type { Request, Response, NextFunction } from 'express';
 import { redisClient } from '../config/redis.js';
 
 const WINDOW_SIZE_IN_SECONDS = 60;
-const MAX_REQUEST_LIMIT = 100; // Allow 100 requests per minute per IP
+const MAX_REQUEST_LIMIT = 20; // Allow 20 requests per minute per IP
 
 export const rateLimiter = async (req: Request, res: Response, next: NextFunction): Promise<void> => {
     // Gracefully fallback to standard loopback IP if header is missing
