@@ -24,8 +24,10 @@ const PORT = process.env.PORT || 8080;
 const AI_ANOMALY_ENGINE_URL = process.env.AI_ANOMALY_ENGINE_URL || 'http://localhost:8000/analyze';
 
 // Configure HTTP and HTTPS Connection Pooling Agents (keepAlive: true, maxSockets: 100)
-const httpAgent = new http.Agent({ keepAlive: true, maxSockets: 100 });
-const httpsAgent = new https.Agent({ keepAlive: true, maxSockets: 100 });
+http.globalAgent = new http.Agent({ keepAlive: true, maxSockets: 100 });
+https.globalAgent = new https.Agent({ keepAlive: true, maxSockets: 100 });
+const httpAgent = http.globalAgent;
+const httpsAgent = https.globalAgent;
 
 const getProxyAgent = (targetUrl?: string) => {
     if (targetUrl && targetUrl.startsWith('https:')) {
@@ -247,11 +249,11 @@ app.use(
     dynamicTargetResolver,
     aiFirewall, // The request is inspected here next with Dry-Run support
     createProxyMiddleware({
-        agent: httpAgent,
         router: async (req) => {
             return (req as any).targetUrl || process.env.UPSTREAM_TARGET_URL;
         },
         changeOrigin: true,
+        secure: false,
         // Ensure the proxy forwards the original client IP to downstream targets
         xfwd: true,
         on: {
