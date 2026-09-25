@@ -23,9 +23,13 @@ export const extractStructuralMetrics = (bodyStr: string): number[] => {
     for (let i = 0; i < totalLength; i++) {
         const char = bodyStr[i];
 
-        // Index 1: Count of injection-sensitive special characters (', ", ;, -)
-        if (char === "'" || char === '"' || char === ';' || char === '-') {
+        // Index 1: Count of true injection-sensitive characters (', ;, --, `)
+        // Note: Standard JSON double quotes (") and lone hyphens (-) in dates/numbers are legitimate JSON syntax.
+        if (char === "'" || char === ';' || char === '`') {
             injectionCharCount++;
+        } else if (char === '-' && i + 1 < totalLength && bodyStr[i + 1] === '-') {
+            injectionCharCount += 2;
+            i++;
         }
 
         // Index 2: Estimated JSON key count (counting structural colons)

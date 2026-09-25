@@ -23,11 +23,13 @@ class AnomalyDetector:
         logger.info("Initializing baseline training for Isolation Forest...")
         
         np.random.seed(42)
-        # 90% very clean, small objects (e.g., [40, 1, 1, 1])
-        clean_samples = np.random.normal(loc=[40.0, 1.0, 1.0, 1.0], scale=1.0, size=(90, FEATURE_DIM))
+        # 90% clean, normal JSON objects (length ~ 50, injection chars ~ 0, colons ~ 2, depth ~ 1)
+        clean_samples = np.random.normal(loc=[50.0, 0.0, 2.0, 1.0], scale=[20.0, 0.2, 1.0, 0.5], size=(90, FEATURE_DIM))
+        clean_samples = np.maximum(clean_samples, 0.0)
         
-        # 10% extreme, messy injection profiles (e.g., [500, 40, 12, 6])
-        messy_samples = np.random.normal(loc=[500.0, 40.0, 12.0, 6.0], scale=5.0, size=(10, FEATURE_DIM))
+        # 10% extreme, messy injection profiles (e.g., [500, 20, 12, 6])
+        messy_samples = np.random.normal(loc=[500.0, 20.0, 12.0, 6.0], scale=5.0, size=(10, FEATURE_DIM))
+        messy_samples = np.maximum(messy_samples, 0.0)
         
         # Combine clean and messy traffic data
         normal_samples = np.vstack([clean_samples, messy_samples])
