@@ -8,7 +8,7 @@ import cors from 'cors';
 import mongoose from 'mongoose';
 import { rateLimiter } from './middleware/rateLimiter.js';
 import { authenticateAndAuthorize } from './middleware/authenticate.js';
-import { aiFirewall } from './middleware/aiFirewall.js';
+import { securityFilter } from './middleware/securityFilter.js';
 import { initQueue } from './config/queue.js';
 import { authRouter } from './routes/auth.js';
 import { projectsRouter } from './routes/projects.js';
@@ -21,7 +21,6 @@ dotenv.config();
 
 const app = express();
 const PORT = process.env.PORT || 8080;
-const AI_ANOMALY_ENGINE_URL = process.env.AI_ANOMALY_ENGINE_URL || 'http://localhost:8000/analyze';
 
 // Configure HTTP and HTTPS Connection Pooling Agents (keepAlive: true, maxSockets: 100)
 http.globalAgent = new http.Agent({ keepAlive: true, maxSockets: 100 });
@@ -48,43 +47,6 @@ app.use(express.json({
 
 // Apply global DDoS firewall log rate metrics across all entries
 app.use(rateLimiter);
-
-/**
- * Dedicated Asynchronous Telemetry Logging Middleware.
- * Captures request footprints and sends telemetry data asynchronously to the Python AI Anomaly Engine.
- */
-const telemetryLogger = (req: Request, res: Response, next: NextFunction): void => {
-    const pathLength = (req.originalUrl || req.url || '').length;
-    const methodLength = (req.method || '').length;
-    const timestampFraction = (Date.now() % 10000) / 10000;
-    const contentLength = Number(req.headers['content-length']) || 0;
-
-    // Nest numerical features inside the 'metrics' field required by PayloadMetrics schema
-    const telemetryPayload = {
-        metrics: [
-            pathLength / 100.0,          // Normalized path length feature
-            methodLength / 10.0,         // Normalized HTTP method length feature
-            timestampFraction,           // Time-based periodic feature
-            contentLength / 1000.0       // Normalized content length feature
-        ]
-    };
-
-    // Asynchronous non-blocking background HTTP call to AI Anomaly Engine uvicorn server
-    setImmediate(() => {
-        fetch(AI_ANOMALY_ENGINE_URL, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify(telemetryPayload)
-        }).catch((err) => {
-            console.error('[Telemetry Fail-Open Bypass] Silently bypassed anomaly engine exception:', (err as Error).message);
-        });
-    });
-
-    next();
-};
-
-// Apply telemetry logger globally upstream of the routing pipeline
-app.use(telemetryLogger);
 
 // Mount stateless IAM authentication routes
 app.use('/api/v1/auth', authRouter);
@@ -134,8 +96,8 @@ routesConfig.forEach(({ path, target, roles }) => {
         }
     };
 
-    // Secure path execution wrapper: [Rate Limit] -> [JWT/RBAC Check] -> [AI Firewall] -> [Proxy Stream Forwarding]
-    app.use(path, authenticateAndAuthorize(roles), aiFirewall, createProxyMiddleware(proxyOptions));
+    // Secure path execution wrapper: [Rate Limit] -> [JWT/RBAC Check] -> [Security Filter] -> [Proxy Stream Forwarding]
+    app.use(path, authenticateAndAuthorize(roles), securityFilter, createProxyMiddleware(proxyOptions));
 });
 
 /**
@@ -247,7 +209,7 @@ const dynamicTargetResolver = async (req: Request, res: Response, next: NextFunc
 app.use(
     '/',
     dynamicTargetResolver,
-    aiFirewall, // The request is inspected here next with Dry-Run support
+    securityFilter, // The request is inspected here next with Edge Security Filter
     createProxyMiddleware({
         router: async (req) => {
             return (req as any).targetUrl || process.env.UPSTREAM_TARGET_URL;

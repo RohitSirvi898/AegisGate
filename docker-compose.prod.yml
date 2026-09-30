@@ -39,17 +39,6 @@ services:
     networks:
       - aegis_mesh
 
-  ai-anomaly-engine:
-    build:
-      context: ./services/ai-anomaly-engine
-      dockerfile: Dockerfile
-    container_name: ai_anomaly_engine
-    restart: always
-    ports:
-      - "8000:8000"
-    networks:
-      - aegis_mesh
-
   gateway-core:
     build:
       context: ./services/gateway-core
@@ -60,7 +49,6 @@ services:
       - "8080:8080"
     environment:
       - PORT=8080
-      - AI_ANOMALY_ENGINE_URL=http://ai_anomaly_engine:8000/analyze
       - MONGO_URI=${MONGO_URI}
       - REDIS_URL=redis://aegis_cache:6379
       - RABBITMQ_URL=amqp://aegis_queue:5672
@@ -68,8 +56,6 @@ services:
     depends_on:
       aegis-cache:
         condition: service_healthy
-      ai-anomaly-engine:
-        condition: service_started
       aegis-queue:
         condition: service_healthy
       aegis-db:
@@ -86,7 +72,6 @@ services:
     environment:
       - MONGO_URI=${MONGO_URI}
       - RABBITMQ_URL=amqp://aegis_queue:5672
-      - LLM_API_KEY=${LLM_API_KEY}
     depends_on:
       aegis-queue:
         condition: service_healthy

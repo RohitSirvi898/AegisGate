@@ -24,20 +24,16 @@ graph LR
         Ingress["Edge Proxy<br/>(Port 8080)"]
         JWT{"Stateless<br/>JWT Auth"}
         Redis[("Redis<br/>Rate Limit")]
-        AIFire{"AI Firewall<br/>Middleware"}
+        SecFilter{"Security Filter<br/>(Regex Threat Engine)"}
         Proxy["Proxy Forwarder<br/>(Upstream)"]
     end
-
-    %% AI Engine
-    FastAPI["🧠 ai-anomaly-engine<br/>(FastAPI / ISOF)"]
 
     %% Async Audit Subgraph
     subgraph AuditPlane ["⚙️ Async Audit Pipeline"]
         direction TB
         Queue["In-Memory<br/>Buffer"]
         RabbitMQ[["RabbitMQ<br/>Broker"]]
-        Worker["async-audit-worker<br/>(Daemon)"]
-        GeminiAI{"Google<br/>Gemini LLM"}
+        Worker["async-audit-worker<br/>(PII Redaction & Batch Insert)"]
     end
 
     %% Data Store
@@ -110,20 +106,11 @@ services:
     environment:
       - PORT=8080
       - UPSTREAM_TARGET_URL=http://my-backend-api:5000
-      - AI_ANOMALY_ENGINE_URL=http://aegis-ai:8000/analyze
       - REDIS_URL=redis://aegis-cache:6379
       - RABBITMQ_URL=amqp://aegis-queue:5672
     depends_on:
       - aegis-cache
       - aegis-queue
-      - aegis-ai
-    networks:
-      - secure_mesh
-
-  # Dynamic Isolation Forest ML Engine
-  aegis-ai:
-    image: rohitsirvi/aegisgate-ai:latest
-    container_name: aegis_ai
     networks:
       - secure_mesh
 
@@ -195,7 +182,6 @@ aegis-gate/
 ├── services/
 │   ├── gateway-core/           # Node.js/TypeScript Ingress Gateway & Edge Ingress Proxy (Port 8080)
 │   ├── async-audit-worker/     # Node.js/TypeScript Event Consumer & Bulk Mongoose Persister
-│   ├── ai-anomaly-engine/      # FastAPI/Python Machine Learning Anomaly Inspector (Port 8000)
 │   └── admin-dashboard/        # Vite React/TypeScript Cybersecurity Control Terminal Workspace
 ├── scripts/
 │   └── vps-setup.sh            # Automated Cloud VPS Provisioning and Firewall Script
@@ -207,27 +193,22 @@ aegis-gate/
 ### 1. `gateway-core` Ingress Gateway
 * **Stateless Auth Routing (`src/routes/auth.ts`)**: Registers and authenticates developers (`POST /api/v1/auth/register`, `POST /api/v1/auth/login`) securely hashing passwords with `bcryptjs` (salt rounds 10) and issuing stateless `jsonwebtoken` (JWT) authorization structures.
 * **Environment Provisioner (`src/routes/projects.ts`)**: Generates cryptographically secure API keys prefixed with `ag_live_` (`POST /api/v1/projects`), automatically linking project configurations to authenticated developer accounts and invalidating cached Redis keys on updates.
-* **Redis Hot-Path Target Resolver (`src/index.ts`)**: Caches API key validations and project metadata (`targetUrl`, `dryRun`, `enableLLMAudit`, webhooks) in Redis (`aegis-cache`) with a 300s TTL, eliminating direct MongoDB reads from middleware hot paths.
+* **Redis Hot-Path Target Resolver (`src/index.ts`)**: Caches API key validations and project metadata (`targetUrl`, webhooks) in Redis (`aegis-cache`) with a 300s TTL, eliminating direct MongoDB reads from middleware hot paths.
 * **Atomic O(1) Rate Limiter (`src/middleware/rateLimiter.ts` & `src/config/redis.ts`)**: Utilizes an atomic Redis `rateLimitIncr` Lua script (`INCR` + `EXPIRE`) to enforce per-IP rate bounds in O(1) time without DB access or concurrency ZSET collisions.
 * **HTTP Connection Pooling Agent (`src/index.ts`)**: Configures `http.Agent` and `https.Agent` (`keepAlive: true`, `maxSockets: 100`) in `http-proxy-middleware` to reuse TCP sockets and minimize latency when proxying downstream.
-* **Non-Blocking Telemetry & AI Firewall (`src/middleware/aiFirewall.ts`)**: Extracts structural payload metrics (length, injection characters, colon keys, brace depth) for anomaly evaluation, and dispatches threat telemetry asynchronously (`setImmediate`) via RabbitMQ without blocking HTTP response cycles.
+* **Non-Blocking Telemetry & Edge Security Filter (`src/middleware/securityFilter.ts`)**: Synchronously inspects payload limits (100KB body cap) and scans for SQLi / XSS attack signatures (`' OR '1'='1'`, `<script>`, `UNION SELECT`, `--`, `/* */`), dropping attacks with HTTP 403 Forbidden and asynchronously (`setImmediate`) dispatching threat telemetry via RabbitMQ without blocking HTTP response cycles.
 * **Self-Healing Message Broker (`src/config/queue.ts`)**: Implements an async RabbitMQ connection loop with a recursive 5-second retry backoff and Dead-Letter Exchange (DLX). Automatically buffers pending telemetry into memory if RabbitMQ is temporarily offline.
 
-### 2. `ai-anomaly-engine` Anomaly Machine Learning Inspector
-* **Engine Type**: Built as a lightweight pythonic FastAPI microservice.
-* **Algorithm**: Employs an **Isolation Forest (ISOF)** model fitted against synthetic and real structural request bodies.
-* **Host Binding**: Set strictly to bind to the remote container layer interface `0.0.0.0` over Port `8000`.
-
-### 3. `async-audit-worker` Control Plane Auditing Daemon
+### 2. `async-audit-worker` Control Plane Auditing Daemon
 * **Channel Prefetch & DLQ Handling**: Configures `channel.prefetch(20)` to manage broker load. Messages failing processing after 3 retries are routed via `aegis_dlx` to `aegis_dead_letter` for manual inspection.
 * **Local PII Redaction**: Scrubs sensitive key fields (`password`, `credit_card`, `ssn`, `email`) in raw JSON bodies prior to MongoDB insertion.
-* **Google Gemini AI Threat Categorization & Opt-Out**: When `enableLLMAudit: true`, requests diagnoses from Google Gemini LLM models for severity ratings (CRITICAL, HIGH, MEDIUM, LOW) and attack summaries. When `enableLLMAudit: false`, logs records as `UNANALYZED_PRIVACY_OPT_OUT` with zero external network egress.
+* **Batch Telemetry Ingestion**: Consumes messages from RabbitMQ, scrubs sensitive PII, and performs bulk writes into MongoDB Atlas for telemetry logs.
 * **Real-Time Webhook Dispatcher**: Fires asynchronous HTTP webhooks to configured Slack and Discord endpoints upon detecting critical threats.
 
-### 4. `admin-dashboard` React Cybersecurity Workspace
-* **Analytics Console**: Displays real-time blocked event counts, ML inference latency (< 5ms), live threat telemetry stream, and interactive raw payload inspector.
+### 3. `admin-dashboard` React Cybersecurity Workspace
+* **Analytics Console**: Displays real-time blocked event counts, live threat telemetry stream, and interactive raw payload inspector.
 * **Tenant Provisioning**: Provisions new projects, generates `ag_live_` API access keys, and configures upstream routing.
-* **Project Settings**: Toggles **Dry-Run Mode**, enables/disables **AI LLM Threat Analysis**, and updates Slack/Discord alert webhooks.
+* **Project Settings**: Configures upstream targets and updates Slack/Discord alert webhooks.
 * **DLQ Monitor**: Displays health state of `aegis_dead_letter`, allowing administrators to inspect, retry, or purge poison queue payloads.
 
 ---
@@ -244,11 +225,9 @@ REDIS_URL=redis://aegis_cache:6379
 
 # --- Secret Auth Key bounds ---
 JWT_SECRET=your_jwt_signing_key_here
-LLM_API_KEY=your_google_gemini_api_key_here
 
 # --- Network Port Mappings ---
 PORT=8080
-AI_ANOMALY_ENGINE_URL=http://ai-anomaly-engine:8000/analyze
 VITE_API_BASE_URL=http://localhost:8080
 ```
 
@@ -259,13 +238,11 @@ VITE_API_BASE_URL=http://localhost:8080
 AegisGate leverages Docker's built-in DNS and streamlined bridge routing networks to segregate inter-service traffic. Under `docker-compose.prod.yml`, all services communicate internally over a private network mesh `aegis_mesh`:
 
 * `gateway-core` connects securely to `aegis_cache` (Redis) on port `6379`.
-* `gateway-core` synchronously checks structural metrics via `ai-anomaly-engine` on port `8000`.
 * `gateway-core` and `async-audit-worker` communicate with `aegis_queue` (RabbitMQ) on port `5672`.
 
 ### Production Dockerfiles Configuration:
 - **`services/gateway-core/Dockerfile`**: Optimized multi-stage Node distribution compilation. Stage 1 compiles TS into ESNext JS binaries, and Stage 2 runs minimal production environments (`npm ci --only=production`), copying compiled `./dist` paths.
 - **`services/async-audit-worker/Dockerfile`**: High-performance multi-stage daemon distribution skipping developer packages.
-- **`services/ai-anomaly-engine/Dockerfile`**: Secure Python-slim image exposing FastAPIs.
 
 ---
 
@@ -276,9 +253,8 @@ Benchmarked across 110 concurrent requests via Postman Collection Runner using R
 | Metric | Measured Baseline | Target Threshold | Status |
 | :--- | :--- | :--- | :--- |
 | **Gateway Ingress Overhead** | **~3 ms – 15 ms** | $< 50\text{ ms}$ | ✅ PASSED |
-| **Edge Block Latency (403 / 429)** | **3 ms – 4 ms** | $< 10\text{ ms}$ | ✅ PASSED |
-| **Avg ML Inference Latency** | **1.82 ms** | $< 5\text{ ms}$ | ✅ PASSED |
-| **Total Local Proxied Response Time** | **32 ms** | $< 100\text{ ms}$ | ✅ PASSED |
+| **Edge Block Latency (403 / 429)** | **1 ms – 3 ms** | $< 10\text{ ms}$ | ✅ PASSED |
+| **Total Local Proxied Response Time** | **25 ms** | $< 100\text{ ms}$ | ✅ PASSED |
 
 ---
 
@@ -293,7 +269,6 @@ To ensure absolute network security in production clouds (AWS, GCP, DigitalOcean
 | Port / Protocol | Target Service Component | Mesh Access Boundary | Public Internet Access Status |
 | :--- | :--- | :--- | :--- |
 | **8080 (TCP)** | Public Edge Ingress Proxy (`gateway-core`) | Ingress Gateway Ingress | **OPEN** (For dashboard and clients) |
-| **8000 (TCP)** | AI Anomaly ML Engine (`ai-anomaly-engine`) | Private `aegis_mesh` | **CLOSED** (Internal only) |
 | **5672 (TCP)** | RabbitMQ Message Broker (`aegis_queue`) | Private `aegis_mesh` | **CLOSED** (Internal only) |
 | **6379 (TCP)** | Redis Rate Limit Cache (`aegis_cache`) | Private `aegis_mesh` | **CLOSED** (Internal only) |
 | **22 (TCP)** | System SSH Port | Host Interface | **OPEN** (Restricted to Developer IP) |
@@ -309,7 +284,7 @@ To ensure absolute network security in production clouds (AWS, GCP, DigitalOcean
    ```bash
    git clone https://github.com/RohitSirvi898/AegisGate.git aegis-gate
    cd aegis-gate
-   nano .env # Populate MONGO_URI, JWT_SECRET, LLM_API_KEY, and base URLs
+   nano .env # Populate MONGO_URI, JWT_SECRET, and base URLs
    ```
 3. **Boot Production Mesh**: Detach microservice containers in daemon mode:
    ```bash

@@ -49,17 +49,7 @@ services:
       timeout: 5s
       retries: 3
 
-  # 4. Inline AI Anomaly Inference Engine
-  ai-anomaly-engine:
-    build:
-      context: ./services/ai-anomaly-engine
-      dockerfile: Dockerfile
-    container_name: ai-anomaly-engine
-    restart: always
-    ports:
-      - "8000:8000"
-
-  # 5. Core Ingress Gateway Proxy & Edge Security Firewall
+  # 4. Core Ingress Gateway Proxy & Edge Security Firewall
   gateway-core:
     build:
       context: ./services/gateway-core
@@ -70,7 +60,6 @@ services:
       - "8080:8080"
     environment:
       - PORT=8080
-      - AI_ANOMALY_ENGINE_URL=http://ai-anomaly-engine:8000/analyze
       - MONGO_URI=${MONGO_URI:-mongodb://aegis_admin:aegis_secure_password@aegis-db:27017/aegis_gate?authSource=admin}
       - REDIS_HOST=aegis-cache
       - REDIS_PORT=6379
@@ -85,10 +74,8 @@ services:
         condition: service_healthy
       aegis-db:
         condition: service_healthy
-      ai-anomaly-engine:
-        condition: service_started
 
-  # 6. Asynchronous Intelligence Audit Worker
+  # 5. Asynchronous Audit Worker
   async-audit-worker:
     build:
       context: ./services/async-audit-worker
@@ -98,14 +85,13 @@ services:
     environment:
       - MONGO_URI=${MONGO_URI:-mongodb://aegis_admin:aegis_secure_password@aegis-db:27017/aegis_gate?authSource=admin}
       - RABBITMQ_URL=amqp://aegis-queue:5672
-      - LLM_API_KEY=${LLM_API_KEY:-}
     depends_on:
       aegis-queue:
         condition: service_healthy
       aegis-db:
         condition: service_healthy
 
-  # 7. Admin Analytics Dashboard UI
+  # 6. Admin Analytics Dashboard UI
   admin-dashboard:
     build:
       context: ./services/admin-dashboard

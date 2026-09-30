@@ -1,24 +1,20 @@
-import axios from 'axios';
 import dotenv from 'dotenv';
 import mongoose from 'mongoose';
 import amqplib from 'amqplib';
 import { ThreatLogModel } from './models/threatLog.js';
 import { DeadLetterModel } from './models/deadLetter.js';
 import { sendWebhookAlerts } from './utils/webhookNotifier.js';
+import { sanitizePayload } from './utils/piiScrubber.js';
 
 dotenv.config();
 
-const PORT = process.env.PORT || '8081';
 const MONGO_URI = process.env.MONGO_URI || '';
 const RABBITMQ_URL = process.env.RABBITMQ_URL || 'amqp://localhost:5672';
-const LLM_API_KEY = process.env.LLM_API_KEY || '';
 
 const QUEUE_NAME = 'blocked_threats_queue';
 const DLX_EXCHANGE = 'aegis_dlx';
 const DLX_QUEUE = 'aegis_dead_letter';
 const DLX_ROUTING_KEY = 'dead_letter';
-
-const GEMINI_API_URL = 'https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent';
 
 let connection: amqplib.ChannelModel | null = null;
 let channel: amqplib.Channel | null = null;
@@ -39,8 +35,8 @@ const getRetryCount = (msg: amqplib.ConsumeMessage): number => {
 };
 
 /**
- * Flushes batched threat payloads to MongoDB. If tenant has enableLLMAudit === false,
- * bypasses the Gemini LLM API call completely and sets default opt-out values.
+ * Flushes batched threat payloads to MongoDB Atlas.
+ * Applies local PII redaction engine on payloads.
  * Triggers Slack & Discord webhook alerts for CRITICAL/HIGH threats.
  * Routes poison messages to aegis_dead_letter DLQ on repeated failures.
  */
@@ -57,147 +53,44 @@ export const flushBuffer = async (): Promise<void> => {
     console.log(`⚡ [Buffer Flush] Initiating processing flush for batch of ${batch.length} threat logs.`);
 
     try {
-        const optOutItems: typeof batch = [];
-        const auditItems: typeof batch = [];
-
-        for (const item of batch) {
-            if (item.payload.enableLLMAudit === false) {
-                optOutItems.push(item);
-            } else {
-                auditItems.push(item);
-            }
-        }
-
         const dbDocs: any[] = [];
         const notificationQueue: any[] = [];
 
-        // 1. Process Opt-Out items: Bypass Gemini LLM API call completely
-        for (const item of optOutItems) {
+        for (const item of batch) {
+            const rawBody = item.payload.rawBody ? sanitizePayload(item.payload.rawBody) : '';
+            const attackVector = item.payload.attackVector || 'Security Filter Violation';
+            const severity = item.payload.severity || 'HIGH';
+            const summary = item.payload.summary || `Blocked threat pattern: ${attackVector}`;
+
             const doc = {
                 projectId: item.payload.projectId || 'aegis_default_project',
-                clientIp: item.payload.clientIp,
-                endpoint: item.payload.endpoint,
-                method: item.payload.method,
-                timestamp: new Date(item.payload.timestamp),
-                rawBody: item.payload.rawBody,
-                category: 'UNANALYZED_PRIVACY_OPT_OUT',
-                attackVector: 'UNANALYZED_PRIVACY_OPT_OUT',
-                severity: 'INFO',
-                summary: 'LLM analysis disabled by tenant privacy configuration.',
+                clientIp: item.payload.clientIp || 'unknown',
+                endpoint: item.payload.endpoint || '',
+                method: item.payload.method || 'POST',
+                timestamp: item.payload.timestamp ? new Date(item.payload.timestamp) : new Date(),
+                rawBody: typeof rawBody === 'string' ? rawBody : JSON.stringify(rawBody),
+                attackVector,
+                severity,
+                summary,
                 createdAt: new Date()
             };
+
             dbDocs.push(doc);
 
             if (item.payload.slackWebhookUrl || item.payload.discordWebhookUrl) {
                 notificationQueue.push({
                     ...doc,
-                    timestamp: item.payload.timestamp,
+                    timestamp: item.payload.timestamp || new Date().toISOString(),
                     slackWebhookUrl: item.payload.slackWebhookUrl,
                     discordWebhookUrl: item.payload.discordWebhookUrl
                 });
             }
         }
 
-        // 2. Process Audit items: Query Gemini LLM API for intelligence mapping
-        if (auditItems.length > 0) {
-            const threatItems = auditItems.map((item) => item.payload);
-
-            const formattedThreats = threatItems
-                .map(
-                    (item, idx) => `
-Record #${idx + 1}:
-Client IP: ${item.clientIp}
-Requested Endpoint: ${item.endpoint}
-HTTP Method: ${item.method}
-Timestamp: ${item.timestamp}
-Request Payload: ${item.rawBody}
-        `
-                )
-                .join('\n---\n');
-
-            const systemPrompt = `You are a Principal Security Intelligence Analyst. Analyze the following batch of blocked API threats.
-STRICTLY respond with a valid JSON array of objects (one object per Record in the exact order presented), where each object contains exactly the following keys:
-- 'attackVector' (string, e.g. "SQL Injection", "XSS", "Anomaly")
-- 'severity' (string, e.g. "CRITICAL", "HIGH", "MEDIUM", "LOW")
-- 'summary' (string, a concise human-readable security analysis summary)
-
-Your response must be ONLY the raw JSON array. Do not include markdown code block backticks or other conversational text.`;
-
-            console.log(`🤖 [LLM API Call] Requesting AI threat analysis from Gemini API for ${auditItems.length} records...`);
-
-            const response = await axios.post(
-                `${GEMINI_API_URL}?key=${LLM_API_KEY}`,
-                {
-                    contents: [
-                        {
-                            parts: [
-                                {
-                                    text: `${systemPrompt}\n\nThreat Records:\n${formattedThreats}`
-                                }
-                            ]
-                        }
-                    ],
-                    generationConfig: {
-                        responseMimeType: 'application/json'
-                    }
-                },
-                {
-                    headers: {
-                        'Content-Type': 'application/json'
-                    },
-                    timeout: 25000
-                }
-            );
-
-            const responseText = response.data?.candidates?.[0]?.content?.parts?.[0]?.text;
-            if (!responseText) {
-                throw new Error('Gemini API returned an empty or invalid response content.');
-            }
-
-            const cleanText = responseText.replace(/```json/g, '').replace(/```/g, '').trim();
-            const llmResult = JSON.parse(cleanText) as { attackVector: string; severity: string; summary: string }[];
-
-            if (!Array.isArray(llmResult)) {
-                throw new Error('LLM output could not be parsed into a JSON array.');
-            }
-
-            auditItems.forEach((item, idx) => {
-                const llmAnalysis = llmResult[idx] || {
-                    attackVector: 'Uncategorized Anomaly',
-                    severity: 'HIGH',
-                    summary: 'AI Security classification was unavailable for this record.'
-                };
-
-                const doc = {
-                    projectId: item.payload.projectId || 'aegis_default_project',
-                    clientIp: item.payload.clientIp,
-                    endpoint: item.payload.endpoint,
-                    method: item.payload.method,
-                    timestamp: new Date(item.payload.timestamp),
-                    rawBody: item.payload.rawBody,
-                    attackVector: llmAnalysis.attackVector,
-                    severity: llmAnalysis.severity,
-                    summary: llmAnalysis.summary,
-                    createdAt: new Date()
-                };
-
-                dbDocs.push(doc);
-
-                if (item.payload.slackWebhookUrl || item.payload.discordWebhookUrl) {
-                    notificationQueue.push({
-                        ...doc,
-                        timestamp: item.payload.timestamp,
-                        slackWebhookUrl: item.payload.slackWebhookUrl,
-                        discordWebhookUrl: item.payload.discordWebhookUrl
-                    });
-                }
-            });
-        }
-
-        // Persist all scrubbed threat records to MongoDB in a single batch
+        // Persist all scrubbed threat records to MongoDB in a bulk write / insert
         if (dbDocs.length > 0) {
             await ThreatLogModel.insertMany(dbDocs);
-            console.log(`💾 [Database] Successfully wrote ${dbDocs.length} updated intelligence records to MongoDB.`);
+            console.log(`💾 [Database] Successfully wrote ${dbDocs.length} telemetry records to MongoDB.`);
         }
 
         // Dispatch Slack & Discord webhook alerts asynchronously
