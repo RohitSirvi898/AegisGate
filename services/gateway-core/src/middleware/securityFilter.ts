@@ -1,6 +1,9 @@
 import type { Request, Response, NextFunction } from 'express';
 import { publishThreatLog } from '../config/queue.js';
 import { redisClient } from '../config/redis.js';
+import { sendGatewayError } from '../utils/errors.js';
+import { getClientIp } from '../utils/ip.js';
+import { recordAbuseEvent } from './ipJail.js';
 
 /**
  * Fast Regex Threat Inspection patterns for blatant SQLi / XSS exploit patterns.
@@ -19,13 +22,16 @@ const THREAT_PATTERNS: { name: string; regex: RegExp }[] = [
  * 1. Payload Body Cap Check: Rejects bodies > 100KB with 413 Payload Too Large.
  * 2. Fast Regex Threat Inspection: Scans body string for SQLi / XSS patterns.
  * 3. On attack pattern detection:
+ *    - Increments Redis abuse score via recordAbuseEvent().
  *    - Dispatches threat event asynchronously to RabbitMQ via setImmediate().
- *    - Immediately drops request with HTTP 403 Forbidden.
+ *    - Immediately drops request with HTTP 403 'request_blocked'.
  * 4. On clean payload: Calls next() immediately without blocking.
  */
 export const securityFilter = async (req: Request, res: Response, next: NextFunction): Promise<void> => {
     try {
         let bodyStr = '';
+        const clientIp = (req as any).clientIp || getClientIp(req);
+        (req as any).clientIp = clientIp;
 
         // 1. Payload Body Cap Check (100KB = 100 * 1024 bytes)
         if (req.body !== undefined && req.body !== null) {
@@ -36,10 +42,7 @@ export const securityFilter = async (req: Request, res: Response, next: NextFunc
             }
 
             if (bodyStr.length > 100 * 1024) {
-                res.status(413).json({
-                    success: false,
-                    error: 'Payload Too Large'
-                });
+                sendGatewayError(res, 413, 'payload_too_large', req);
                 return;
             }
         } else if (req.query && Object.keys(req.query).length > 0) {
@@ -76,11 +79,16 @@ export const securityFilter = async (req: Request, res: Response, next: NextFunc
                     }
                 }
 
+                // Increment IP abuse score in Redis (auto-jails if threshold reached)
+                recordAbuseEvent(clientIp, 1).catch(err => {
+                    console.error('[Abuse Scoring Background Error]:', err?.message || err);
+                });
+
                 // Asynchronously dispatch threat event to RabbitMQ for telemetry logging
                 setImmediate(() => {
                     publishThreatLog({
                         projectId: finalProjectId,
-                        clientIp: req.ip || req.socket.remoteAddress || 'unknown-client',
+                        clientIp,
                         endpoint: req.originalUrl || req.url || '',
                         method: req.method,
                         timestamp: new Date().toISOString(),
@@ -95,11 +103,8 @@ export const securityFilter = async (req: Request, res: Response, next: NextFunc
                     });
                 });
 
-                // Immediately drop the request with HTTP 403 Forbidden
-                res.status(403).json({
-                    success: false,
-                    error: 'Request blocked by AegisGate Security Filter.'
-                });
+                // Immediately drop the request with HTTP 403 request_blocked
+                sendGatewayError(res, 403, 'request_blocked', req);
                 return;
             }
         }
@@ -108,10 +113,7 @@ export const securityFilter = async (req: Request, res: Response, next: NextFunc
         return next();
     } catch (error: any) {
         console.error('[Security Filter Internal Fault - Fail-Closed]:', error?.message || error);
-        res.status(500).json({
-            success: false,
-            error: 'Internal Security Filter Error'
-        });
+        sendGatewayError(res, 503, 'upstream_unavailable', req);
         return;
     }
 };

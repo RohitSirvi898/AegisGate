@@ -1,12 +1,15 @@
 import type { Request, Response, NextFunction } from 'express';
 import { redisClient } from '../config/redis.js';
+import { getClientIp } from '../utils/ip.js';
+import { sendGatewayError } from '../utils/errors.js';
 
 const WINDOW_SIZE_IN_SECONDS = 60;
 const MAX_REQUEST_LIMIT = 20; // Allow 20 requests per minute per IP
 
 export const rateLimiter = async (req: Request, res: Response, next: NextFunction): Promise<void> => {
-    // Gracefully fallback to standard loopback IP if header is missing
-    const clientIp = req.ip || req.socket.remoteAddress || 'unknown-client';
+    const clientIp = (req as any).clientIp || getClientIp(req);
+    (req as any).clientIp = clientIp;
+
     const currentWindow = Math.floor(Date.now() / (WINDOW_SIZE_IN_SECONDS * 1000));
     const redisKey = `rate_limit:${clientIp}:${currentWindow}`;
 
@@ -22,13 +25,9 @@ export const rateLimiter = async (req: Request, res: Response, next: NextFunctio
             // Request is allowed. Call next()
             next();
         } else {
-            // Request is blocked. Immediately return status 429 with JSON error payload and set a 'Retry-After' header
-            res.setHeader('Retry-After', WINDOW_SIZE_IN_SECONDS.toString());
-            res.status(429).json({
-                error: 'Too Many Requests',
-                message: `API consumption threshold exceeded. Maximum allows ${MAX_REQUEST_LIMIT} requests per minute. Please try again later.`,
-                retryAfterSeconds: WINDOW_SIZE_IN_SECONDS,
-                timestamp: new Date().toISOString()
+            // Request is blocked. Immediately return status 429 with standard error payload and Retry-After header
+            sendGatewayError(res, 429, 'rate_limited', req, {
+                retryAfterSeconds: WINDOW_SIZE_IN_SECONDS
             });
         }
     } catch (error: any) {

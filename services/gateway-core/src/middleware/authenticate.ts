@@ -1,5 +1,6 @@
 import type { Request, Response, NextFunction } from 'express';
 import jwt from 'jsonwebtoken';
+import { sendGatewayError } from '../utils/errors.js';
 
 const JWT_SECRET = process.env.JWT_SECRET || 'aegisgate_fallback_deep_signing_secret_key';
 
@@ -16,22 +17,14 @@ export const authenticateAndAuthorize = (allowedRoles: string[]) => {
         const authHeader = req.headers.authorization;
 
         if (!authHeader || !authHeader.startsWith('Bearer ')) {
-            res.status(401).json({
-                error: 'Unauthorized',
-                message: 'Missing or structurally invalid Authentication token strings.',
-                timestamp: new Date().toISOString()
-            });
+            sendGatewayError(res, 401, 'invalid_or_missing_credentials', req);
             return;
         }
 
         const token = authHeader.split(' ')[1];
 
         if (!token) {
-            res.status(401).json({
-                error: 'Unauthorized',
-                message: 'Missing or structurally invalid Authentication token strings.',
-                timestamp: new Date().toISOString()
-            });
+            sendGatewayError(res, 401, 'invalid_or_missing_credentials', req);
             return;
         }
 
@@ -41,11 +34,7 @@ export const authenticateAndAuthorize = (allowedRoles: string[]) => {
 
             // Access Evaluation: Enforce Role-Based Access Control boundaries
             if (!allowedRoles.includes(decodedUser.role)) {
-                res.status(403).json({
-                    error: 'Forbidden',
-                    message: 'Access Denied: Your assigned identity role lacks authorization rights for this domain profile.',
-                    timestamp: new Date().toISOString()
-                });
+                sendGatewayError(res, 403, 'request_blocked', req);
                 return;
             }
 
@@ -59,19 +48,11 @@ export const authenticateAndAuthorize = (allowedRoles: string[]) => {
             console.error('[Identity Validation Fault]', error?.message || error);
             // Fail-Closed: If error is an internal database/server error rather than JWT verification error
             if (error?.name !== 'JsonWebTokenError' && error?.name !== 'TokenExpiredError' && error?.name !== 'NotBeforeError') {
-                res.status(500).json({
-                    error: 'Internal Server Error',
-                    message: 'Authentication Service Unavailable',
-                    timestamp: new Date().toISOString()
-                });
+                sendGatewayError(res, 503, 'auth_backend_unavailable', req);
                 return;
             }
 
-            res.status(401).json({
-                error: 'Unauthorized',
-                message: 'The provided access credential validation signature has expired or is cryptographically invalid.',
-                timestamp: new Date().toISOString()
-            });
+            sendGatewayError(res, 401, 'invalid_or_missing_credentials', req);
             return;
         }
     };

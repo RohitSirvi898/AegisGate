@@ -1,14 +1,21 @@
-import http from 'http';
-import https from 'https';
+import http from 'node:http';
+import https from 'node:https';
 import express, { type Request, type Response, type NextFunction } from 'express';
 import { createProxyMiddleware, fixRequestBody, type Options } from 'http-proxy-middleware';
 import dotenv from 'dotenv';
-import { ServerResponse } from 'http';
+import { ServerResponse } from 'node:http';
 import cors from 'cors';
 import mongoose from 'mongoose';
 import { rateLimiter } from './middleware/rateLimiter.js';
 import { authenticateAndAuthorize } from './middleware/authenticate.js';
 import { securityFilter } from './middleware/securityFilter.js';
+import { ipJailMiddleware } from './middleware/ipJail.js';
+import {
+    createCircuitBreakerMiddleware,
+    handleProxyError,
+    extractOrigin,
+    UPSTREAM_TIMEOUT_MS
+} from './middleware/circuitBreaker.js';
 import { initQueue } from './config/queue.js';
 import { authRouter } from './routes/auth.js';
 import { projectsRouter } from './routes/projects.js';
@@ -16,37 +23,85 @@ import { analyticsRouter } from './routes/analytics.js';
 import { usersRouter } from './routes/users.js';
 import { redisClient } from './config/redis.js';
 import { ProjectModel } from './models/project.js';
+import {
+    requestIdMiddleware,
+    sendGatewayError,
+    getOrSetRequestId
+} from './utils/errors.js';
+import { getClientIp } from './utils/ip.js';
+import {
+    ssrfHttpAgent,
+    ssrfHttpsAgent,
+    getSsrfSafeAgent,
+    validateTargetUrl
+} from './utils/ssrf.js';
 
 dotenv.config();
 
 const app = express();
 const PORT = process.env.PORT || 8080;
 
-// Configure HTTP and HTTPS Connection Pooling Agents (keepAlive: true, maxSockets: 100)
-http.globalAgent = new http.Agent({ keepAlive: true, maxSockets: 100 });
-https.globalAgent = new https.Agent({ keepAlive: true, maxSockets: 100 });
-const httpAgent = http.globalAgent;
-const httpsAgent = https.globalAgent;
-
-const getProxyAgent = (targetUrl?: string) => {
-    if (targetUrl && targetUrl.startsWith('https:')) {
-        return httpsAgent;
-    }
-    return httpAgent;
-};
+// Set global agents to SSRF-safe connection pooling agents with DNS pinning
+http.globalAgent = ssrfHttpAgent;
+https.globalAgent = ssrfHttpsAgent;
 
 // Enable CORS globally to support frontend calls
 app.use(cors());
 
-// Enable express.json body parser globally with rawBody verification capture
+// =========================================================================
+// PIPELINE STEP 1: REQUEST ID ASSIGNMENT & INGRESS PAYLOAD CAP (100KB)
+// =========================================================================
+app.use(requestIdMiddleware);
+
+// Fast Content-Length payload cap check before buffering
+app.use((req: Request, res: Response, next: NextFunction): void => {
+    const rawLength = req.headers['content-length'];
+    if (rawLength) {
+        const length = parseInt(rawLength, 10);
+        if (!isNaN(length) && length > 100 * 1024) {
+            sendGatewayError(res, 413, 'payload_too_large', req);
+            return;
+        }
+    }
+    next();
+});
+
+// JSON body parser with 100KB limit and rawBody capture
 app.use(express.json({
-    verify: (req: any, res, buf) => {
+    limit: '100kb',
+    verify: (req: any, _res, buf) => {
         req.rawBody = buf.toString();
     }
 }));
 
-// Apply global DDoS firewall log rate metrics across all entries
+// Catch payload too large errors thrown during body stream parsing
+app.use((err: any, req: Request, res: Response, next: NextFunction): void => {
+    if (err && (err.type === 'entity.too.large' || err.status === 413 || err.statusCode === 413)) {
+        sendGatewayError(res, 413, 'payload_too_large', req);
+        return;
+    }
+    next(err);
+});
+
+// =========================================================================
+// PIPELINE STEP 2: CLIENT IP DERIVATION & NORMALIZATION
+// =========================================================================
+app.use((req: Request, _res: Response, next: NextFunction): void => {
+    (req as any).clientIp = getClientIp(req);
+    next();
+});
+
+// =========================================================================
+// PIPELINE STEP 3: FAST REDIS IP-JAIL CHECK
+// =========================================================================
+app.use(ipJailMiddleware);
+
+// Apply global DDoS firewall rate limiter across all entries
 app.use(rateLimiter);
+
+// =========================================================================
+// PIPELINE STEP 4: AUTH & ROUTE RESOLUTION
+// =========================================================================
 
 // Mount stateless IAM authentication routes
 app.use('/api/v1/auth', authRouter);
@@ -56,64 +111,73 @@ app.use('/api/v1/projects', projectsRouter);
 app.use('/api/v1/analytics', analyticsRouter);
 app.use('/api/v1/users', usersRouter);
 
-// Target downstream configurations mapped to their explicit protection rules
+// Target downstream configurations mapped to explicit protection rules
 const routesConfig = [
     {
         path: '/api/v1/users',
         target: 'http://httpbin.org/anything/users',
-        roles: ['admin', 'developer', 'user'] // Public/General data bounds
+        roles: ['admin', 'developer', 'user']
     },
     {
         path: '/api/v1/payments',
         target: 'http://httpbin.org/anything/payments',
-        roles: ['admin'] // Highly critical administrative route
+        roles: ['admin']
     }
 ];
 
-// Register dynamic proxies coupled with identity firewall checkpoints
+// Register dynamic proxies coupled with identity firewall & circuit breaker checkpoints
 routesConfig.forEach(({ path, target, roles }) => {
     // Skip /api/v1/users proxy configuration to prioritize the native controller route
     if (path === '/api/v1/users') {
         return;
     }
 
+    const origin = extractOrigin(target);
+
     const proxyOptions: Options = {
         target,
         changeOrigin: true,
-        agent: getProxyAgent(target),
+        agent: getSsrfSafeAgent(target),
+        timeout: UPSTREAM_TIMEOUT_MS,
+        proxyTimeout: UPSTREAM_TIMEOUT_MS,
         pathRewrite: { [`^${path}`]: '' },
         on: {
             error: (err, req, res) => {
-                if (res instanceof ServerResponse && !res.headersSent) {
-                    res.writeHead(502, { 'Content-Type': 'application/json' });
-                    res.end(JSON.stringify({ error: 'Bad Gateway', message: 'Upstream service unreachable.' }));
-                }
+                handleProxyError(err, req as Request, res as ServerResponse, origin || undefined);
             },
-            proxyReq: (proxyReq, req, res) => {
+            proxyReq: (proxyReq, req, _res) => {
+                proxyReq.setHeader('X-Request-Id', (req as any).requestId || getOrSetRequestId(req as Request));
                 proxyReq.setHeader('X-Shielded-By', 'AegisGate-Core');
                 fixRequestBody(proxyReq, req);
             }
         }
     };
 
-    // Secure path execution wrapper: [Rate Limit] -> [JWT/RBAC Check] -> [Security Filter] -> [Proxy Stream Forwarding]
-    app.use(path, authenticateAndAuthorize(roles), securityFilter, createProxyMiddleware(proxyOptions));
+    // Pipeline: [Role Check] -> [Security Filter] -> [Circuit Breaker / Bulkhead] -> [Proxy]
+    app.use(
+        path,
+        (req: Request, _res: Response, next: NextFunction) => {
+            (req as any).targetUrl = target;
+            next();
+        },
+        authenticateAndAuthorize(roles),
+        securityFilter,
+        createCircuitBreakerMiddleware(),
+        createProxyMiddleware(proxyOptions)
+    );
 });
 
 /**
  * Dynamic Upstream Target Resolver Middleware.
  * Inspects incoming x-aegis-api-key header, queries Redis (project:<api_key>),
- * falls back to MongoDB with a 5-minute TTL cache, and resolves the project targetUrl.
- * Returns HTTP 401 Unauthorized JSON response if API key is missing or invalid.
+ * falls back to MongoDB with a 5-minute TTL cache, validates target against SSRF,
+ * and attaches resolved metadata onto req.
  */
 const dynamicTargetResolver = async (req: Request, res: Response, next: NextFunction): Promise<void> => {
     const apiKey = req.headers['x-aegis-api-key'];
 
     if (!apiKey || typeof apiKey !== 'string' || apiKey.trim() === '') {
-        res.status(401).json({
-            error: 'Unauthorized',
-            message: 'API key is missing or invalid.'
-        });
+        sendGatewayError(res, 401, 'invalid_or_missing_credentials', req);
         return;
     }
 
@@ -146,10 +210,7 @@ const dynamicTargetResolver = async (req: Request, res: Response, next: NextFunc
         if (!targetUrl) {
             const project = await ProjectModel.findOne({ apiKey: cleanApiKey });
             if (!project) {
-                res.status(401).json({
-                    error: 'Unauthorized',
-                    message: 'API key is missing or invalid.'
-                });
+                sendGatewayError(res, 401, 'invalid_or_missing_credentials', req);
                 return;
             }
 
@@ -161,10 +222,7 @@ const dynamicTargetResolver = async (req: Request, res: Response, next: NextFunc
             projectId = project._id.toString();
 
             if (!targetUrl) {
-                res.status(401).json({
-                    error: 'Unauthorized',
-                    message: 'No target URL configured for this project.'
-                });
+                sendGatewayError(res, 503, 'upstream_unavailable', req);
                 return;
             }
 
@@ -186,7 +244,15 @@ const dynamicTargetResolver = async (req: Request, res: Response, next: NextFunc
             }
         }
 
-        // Attach resolved target URL and metadata onto request object for proxy and firewall
+        // Connect-time SSRF URL Validation
+        const ssrfCheck = validateTargetUrl(targetUrl);
+        if (!ssrfCheck.valid) {
+            console.warn(`[SSRF Guard Rejected Target] ${targetUrl}: ${ssrfCheck.reason}`);
+            sendGatewayError(res, 503, 'upstream_unavailable', req);
+            return;
+        }
+
+        // Attach resolved target URL and metadata onto request object
         (req as any).targetUrl = targetUrl;
         (req as any).projectId = projectId;
         (req as any).dryRun = dryRun;
@@ -197,51 +263,56 @@ const dynamicTargetResolver = async (req: Request, res: Response, next: NextFunc
         next();
     } catch (error: any) {
         console.error('[Dynamic Target Resolution Error]:', error?.message || error);
-        res.status(500).json({
-            error: 'Internal Server Error',
-            message: 'Error resolving dynamic project target.'
-        });
+        sendGatewayError(res, 503, 'upstream_unavailable', req);
         return;
     }
 };
 
-// Any route that is NOT an internal AegisGate route falls down into this dynamic multi-tenant SaaS proxy
+// =========================================================================
+// PIPELINE STEPS 5 & 6: CIRCUIT BREAKER, BULKHEAD & PROXY FORWARDER
+// =========================================================================
 app.use(
     '/',
     dynamicTargetResolver,
-    securityFilter, // The request is inspected here next with Edge Security Filter
+    securityFilter,
+    createCircuitBreakerMiddleware(),
     createProxyMiddleware({
         router: async (req) => {
             return (req as any).targetUrl || process.env.UPSTREAM_TARGET_URL;
         },
         changeOrigin: true,
         secure: false,
-        // Ensure the proxy forwards the original client IP to downstream targets
         xfwd: true,
+        timeout: UPSTREAM_TIMEOUT_MS,
+        proxyTimeout: UPSTREAM_TIMEOUT_MS,
         on: {
-            proxyReq: (proxyReq, req, res) => {
+            proxyReq: (proxyReq, req, _res) => {
                 // Strip the Aegis API key before forwarding downstream
                 proxyReq.removeHeader('x-aegis-api-key');
+                proxyReq.setHeader('X-Request-Id', (req as any).requestId || getOrSetRequestId(req as Request));
+                proxyReq.setHeader('X-Shielded-By', 'AegisGate-Core');
                 fixRequestBody(proxyReq, req);
             },
             error: (err, req, res) => {
-                if (res instanceof ServerResponse && !res.headersSent) {
-                    res.writeHead(502, { 'Content-Type': 'application/json' });
-                    res.end(JSON.stringify({ error: 'Bad Gateway', message: 'Upstream service unreachable.' }));
-                }
+                handleProxyError(err, req as Request, res as ServerResponse);
             }
         }
     })
 );
 
-app.use((req, res) => {
-    res.status(404).json({ error: 'Not Found', message: 'Endpoint path configuration route missing.' });
+app.use((req: Request, res: Response): void => {
+    const requestId = getOrSetRequestId(req, res);
+    res.status(404).json({
+        error: 'not_found',
+        requestId
+    });
 });
 
 app.listen(PORT, async () => {
     console.log(`=================================================`);
     console.log(`🛡️  AegisGate Core Proxy Server running on port: ${PORT}`);
     console.log(`🔐 Dynamic SaaS Multi-Tenant Routing & Edge Auth Engaged`);
+    console.log(`⚡ PRD v2.1 Hardened Pipeline Active`);
     console.log(`=================================================`);
 
     // Establish persistent MongoDB connection
