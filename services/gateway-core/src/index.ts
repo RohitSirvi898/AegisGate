@@ -10,6 +10,7 @@ import { rateLimiter } from './middleware/rateLimiter.js';
 import { authenticateAndAuthorize } from './middleware/authenticate.js';
 import { securityFilter } from './middleware/securityFilter.js';
 import { ipJailMiddleware } from './middleware/ipJail.js';
+import { createResponseCacheMiddleware } from './middleware/responseCache.js';
 import {
     createCircuitBreakerMiddleware,
     handleProxyError,
@@ -96,7 +97,7 @@ app.use((req: Request, _res: Response, next: NextFunction): void => {
 // =========================================================================
 app.use(ipJailMiddleware);
 
-// Apply global DDoS firewall rate limiter across all entries
+// Apply global DDoS firewall rate limiter across all entries (Pre-auth rate limiting)
 app.use(rateLimiter);
 
 // =========================================================================
@@ -153,7 +154,7 @@ routesConfig.forEach(({ path, target, roles }) => {
         }
     };
 
-    // Pipeline: [Role Check] -> [Security Filter] -> [Circuit Breaker / Bulkhead] -> [Proxy]
+    // Pipeline: [Role Check] -> [Security Filter] -> [Cache Lookup] -> [Circuit Breaker / Bulkhead] -> [Proxy]
     app.use(
         path,
         (req: Request, _res: Response, next: NextFunction) => {
@@ -162,6 +163,7 @@ routesConfig.forEach(({ path, target, roles }) => {
         },
         authenticateAndAuthorize(roles),
         securityFilter,
+        createResponseCacheMiddleware(),
         createCircuitBreakerMiddleware(),
         createProxyMiddleware(proxyOptions)
     );
@@ -188,6 +190,7 @@ const dynamicTargetResolver = async (req: Request, res: Response, next: NextFunc
     let slackWebhookUrl = '';
     let discordWebhookUrl = '';
     let projectId: string | null = null;
+    let routes: any[] = [];
 
     try {
         // Query Redis cache for project mapping: project:<api_key>
@@ -201,6 +204,7 @@ const dynamicTargetResolver = async (req: Request, res: Response, next: NextFunc
                 slackWebhookUrl = parsed.slackWebhookUrl || '';
                 discordWebhookUrl = parsed.discordWebhookUrl || '';
                 projectId = parsed.projectId || null;
+                routes = parsed.routes || [];
             } catch {
                 targetUrl = cached;
             }
@@ -252,6 +256,13 @@ const dynamicTargetResolver = async (req: Request, res: Response, next: NextFunc
             return;
         }
 
+        // Match route config for caching and authentication
+        const currentPath = req.path;
+        const matchingRoute = routes.find((r: any) => {
+            if (!r.pathPattern) return false;
+            return currentPath === r.pathPattern || currentPath.startsWith(r.pathPattern.replace(/\*$/, ''));
+        });
+
         // Attach resolved target URL and metadata onto request object
         (req as any).targetUrl = targetUrl;
         (req as any).projectId = projectId;
@@ -259,6 +270,11 @@ const dynamicTargetResolver = async (req: Request, res: Response, next: NextFunc
         (req as any).enableLLMAudit = enableLLMAudit;
         (req as any).slackWebhookUrl = slackWebhookUrl;
         (req as any).discordWebhookUrl = discordWebhookUrl;
+        if (matchingRoute) {
+            (req as any).routeConfig = matchingRoute;
+            (req as any).routeCache = matchingRoute.cache;
+            (req as any).routeId = matchingRoute.id || matchingRoute.pathPattern;
+        }
 
         next();
     } catch (error: any) {
@@ -269,12 +285,13 @@ const dynamicTargetResolver = async (req: Request, res: Response, next: NextFunc
 };
 
 // =========================================================================
-// PIPELINE STEPS 5 & 6: CIRCUIT BREAKER, BULKHEAD & PROXY FORWARDER
+// PIPELINE STEPS 8, 9 & 10: CACHE LOOKUP, CIRCUIT BREAKER & PROXY FORWARDER
 // =========================================================================
 app.use(
     '/',
     dynamicTargetResolver,
     securityFilter,
+    createResponseCacheMiddleware(),
     createCircuitBreakerMiddleware(),
     createProxyMiddleware({
         router: async (req) => {

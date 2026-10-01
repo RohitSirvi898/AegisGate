@@ -1,6 +1,7 @@
 import crypto from 'node:crypto';
 import type { Request, Response, NextFunction } from 'express';
 import { ServerResponse } from 'node:http';
+import { recordTelemetryEvent } from './telemetry.js';
 
 export type GatewayErrorCode =
     | 'invalid_or_missing_credentials'
@@ -21,6 +22,8 @@ export interface GatewayErrorResponse {
 export interface SendGatewayErrorOptions {
     retryAfterSeconds?: number;
     headers?: Record<string, string>;
+    rule?: string;
+    summary?: string;
 }
 
 export const DEFAULT_STATUS_CODES: Record<GatewayErrorCode, number> = {
@@ -80,7 +83,7 @@ export function getOrSetRequestId(req?: Request, res?: Response | ServerResponse
 /**
  * Sends a standard gateway error JSON payload conforming to PRD v2.1:
  * { "error": "<code>", "requestId": "<id>" }
- * Ensures 'X-Request-Id' response header is set.
+ * Ensures 'X-Request-Id' response header is set and telemetry is captured.
  */
 export function sendGatewayError(
     res: Response | ServerResponse,
@@ -116,6 +119,30 @@ export function sendGatewayError(
             // Raw Node.js ServerResponse
             res.writeHead(statusCode, { 'Content-Type': 'application/json' });
             res.end(JSON.stringify(payload));
+        }
+
+        // Record pre-queue sanitized telemetry event for gateway rejection
+        if (req) {
+            try {
+                recordTelemetryEvent({
+                    requestId,
+                    timestamp: new Date().toISOString(),
+                    projectId: (req as any).projectId,
+                    apiKeyId: (req as any).apiKeyId,
+                    clientIp: (req as any).clientIp || req.socket?.remoteAddress || '127.0.0.1',
+                    method: req.method || 'GET',
+                    path: req.originalUrl || req.url || '/',
+                    statusCode,
+                    errorCode,
+                    rule: options?.rule || (req as any).matchedRule,
+                    summary: options?.summary,
+                    headers: req.headers,
+                    query: req.query,
+                    rawBody: (req as any).rawBody || req.body
+                });
+            } catch {
+                // Telemetry failure must never impede error response delivery
+            }
         }
     }
 }
