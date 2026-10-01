@@ -118,3 +118,84 @@ export const purgeDeadLetterMessage = async (
         throw new Error(errData.message || `Failed to purge message ${messageId}`);
     }
 };
+
+export interface JailedIpRecord {
+    ip: string;
+    ttl: number;
+}
+
+export interface CircuitBreakerRecord {
+    origin: string;
+    state: 'CLOSED' | 'OPEN' | 'HALF_OPEN';
+    consecutiveFailures: number;
+    inFlight: number;
+    lastStateChange: number;
+}
+
+/**
+ * Fetches all currently banned client IPs and their remaining TTLs from Gateway Core.
+ */
+export const fetchJailedIps = async (token?: string): Promise<JailedIpRecord[]> => {
+    try {
+        const headers: Record<string, string> = {};
+        if (token) {
+            headers['Authorization'] = `Bearer ${token}`;
+        }
+        const response = await fetch(`${baseURL}/api/v1/admin/jailed-ips`, {
+            headers,
+            signal: AbortSignal.timeout(3000)
+        });
+        if (!response.ok) {
+            return [];
+        }
+        const data = await response.json();
+        return Array.isArray(data.jailedIps) ? data.jailedIps : [];
+    } catch {
+        return [];
+    }
+};
+
+/**
+ * Unbans a previously jailed client IP address via Gateway Core admin endpoint.
+ */
+export const unbanClientIp = async (ip: string, token?: string): Promise<void> => {
+    const headers: Record<string, string> = {
+        'Content-Type': 'application/json'
+    };
+    if (token) {
+        headers['Authorization'] = `Bearer ${token}`;
+    }
+    const response = await fetch(`${baseURL}/api/v1/admin/unban`, {
+        method: 'POST',
+        headers,
+        body: JSON.stringify({ ip })
+    });
+    if (!response.ok) {
+        const errData = await response.json().catch(() => ({}));
+        throw new Error(errData.message || `Failed to unban IP ${ip}`);
+    }
+};
+
+/**
+ * Fetches active upstream circuit breaker states from Gateway Core.
+ */
+export const fetchCircuitBreakers = async (token?: string): Promise<CircuitBreakerRecord[]> => {
+    try {
+        const headers: Record<string, string> = {};
+        if (token) {
+            headers['Authorization'] = `Bearer ${token}`;
+        }
+        const response = await fetch(`${baseURL}/api/v1/admin/circuit-breakers`, {
+            headers,
+            signal: AbortSignal.timeout(3000)
+        });
+        if (!response.ok) {
+            return [];
+        }
+        const data = await response.json();
+        return Array.isArray(data.circuitBreakers) ? data.circuitBreakers : [];
+    } catch {
+        return [];
+    }
+};
+

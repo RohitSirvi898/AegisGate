@@ -94,6 +94,25 @@ export async function unbanIp(clientIp: string): Promise<boolean> {
 }
 
 /**
+ * Admin helper to retrieve all currently banned client IPs and their remaining TTLs.
+ */
+export async function getJailedIps(): Promise<Array<{ ip: string; ttl: number }>> {
+    try {
+        const keys = await redisClient.keys('jail:*');
+        const jailedList: Array<{ ip: string; ttl: number }> = [];
+        for (const key of keys) {
+            const ip = key.replace(/^jail:/, '');
+            const ttl = await redisClient.ttl(key);
+            jailedList.push({ ip, ttl: ttl > 0 ? ttl : 0 });
+        }
+        return jailedList;
+    } catch (err: any) {
+        console.error('[Get Jailed IPs Error]:', err?.message || err);
+        return [];
+    }
+}
+
+/**
  * Step 3 in pipeline: Fast Redis IP-Jail Check.
  * If jail:{clientIp} exists, immediately short-circuit with HTTP 403:
  * { "error": "ip_jailed", "requestId": "<id>" }

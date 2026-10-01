@@ -147,14 +147,14 @@ export default function ProjectSettings({ activeProject, token, onProjectUpdated
                         </button>
                     </div>
 
-                    {/* LLM Privacy Toggle */}
+                    {/* Signature Security Filter Toggle */}
                     <div className="flex items-start justify-between p-4 bg-slate-950 border border-slate-800/80 rounded-xl hover:border-slate-700 transition-colors">
                         <div className="space-y-1 pr-4">
                             <label htmlFor="enableLLMAuditToggle" className="text-sm font-medium text-white cursor-pointer flex items-center gap-2">
-                                Enable AI LLM Threat Analysis (Disable to prevent sending scrubbed payloads to external Gemini LLM)
+                                Signature Security Filter (Strict Regex & Edge Security Tripwires)
                             </label>
                             <p className="text-xs text-slate-400">
-                                Opt-out of external AI LLM categorization. Threats will be scrubbed and logged directly as <span className="font-mono text-amber-400">UNANALYZED_PRIVACY_OPT_OUT</span>.
+                                Enforce strict regex inspection on SQL injection, Cross-Site Scripting (XSS), Path Traversal, and SSRF patterns on ingress payloads.
                             </p>
                         </div>
                         <button

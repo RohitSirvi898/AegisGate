@@ -300,8 +300,32 @@ export function getCircuitBreakerState(origin: string): Readonly<UpstreamCircuit
 }
 
 /**
+ * Returns all active upstream circuit breaker state machines.
+ */
+export function getAllCircuitBreakers(): UpstreamCircuitBreaker[] {
+    const list = Array.from(circuitBreakers.values());
+    if (list.length === 0) {
+        const defaultOrigin = process.env.UPSTREAM_TARGET_URL
+            ? extractOrigin(process.env.UPSTREAM_TARGET_URL) || 'http://httpbin.org'
+            : 'http://httpbin.org';
+        return [
+            {
+                origin: defaultOrigin,
+                state: 'CLOSED',
+                consecutiveFailures: 0,
+                lastStateChange: Date.now(),
+                inFlight: 0,
+                probeInFlight: false
+            }
+        ];
+    }
+    return list;
+}
+
+/**
  * Resets all circuit breakers in memory (used for tests/reloading).
  */
 export function resetAllCircuitBreakers(): void {
     circuitBreakers.clear();
 }
+

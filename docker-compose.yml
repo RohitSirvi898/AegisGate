@@ -67,6 +67,8 @@ services:
       - RABBITMQ_URL=amqp://aegis-queue:5672
       - JWT_SECRET=${JWT_SECRET:-aegis_fallback_jwt_secret_key_123}
       - UPSTREAM_TARGET_URL=${UPSTREAM_TARGET_URL:-http://httpbin.org/anything}
+      - ALLOW_PRIVATE_UPSTREAMS=true
+      - TRUSTED_PROXY_CIDRS=${TRUSTED_PROXY_CIDRS:-127.0.0.1/32,10.0.0.0/8,172.16.0.0/12,192.168.0.0/16}
     depends_on:
       aegis-cache:
         condition: service_healthy

@@ -22,6 +22,7 @@ import { authRouter } from './routes/auth.js';
 import { projectsRouter } from './routes/projects.js';
 import { analyticsRouter } from './routes/analytics.js';
 import { usersRouter } from './routes/users.js';
+import { adminRouter } from './routes/admin.js';
 import { redisClient } from './config/redis.js';
 import { ProjectModel } from './models/project.js';
 import {
@@ -111,6 +112,7 @@ app.use('/api/v1/auth', authRouter);
 app.use('/api/v1/projects', projectsRouter);
 app.use('/api/v1/analytics', analyticsRouter);
 app.use('/api/v1/users', usersRouter);
+app.use('/api/v1/admin', adminRouter);
 
 // Target downstream configurations mapped to explicit protection rules
 const routesConfig = [

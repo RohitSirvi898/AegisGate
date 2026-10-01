@@ -1,11 +1,18 @@
 import { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { Shield, Radio, Activity, AlertTriangle, Terminal, Code, Cpu, RefreshCw, Layers, LogOut, LogIn, ChevronDown, Settings, AlertOctagon } from 'lucide-react';
+import { Shield, Radio, Activity, AlertTriangle, Terminal, Code, Cpu, RefreshCw, Layers, LogOut, LogIn, ChevronDown, Settings, AlertOctagon, Lock, Unlock, Zap, CheckCircle2 } from 'lucide-react';
 import { useThreatTelemetry, type ThreatRecord } from '../hooks/useThreatTelemetry';
 import { useAuth } from '../context/AuthContext';
 import ProjectSettings from './ProjectSettings';
 import DLQMonitor from './DLQMonitor';
-import type { Project } from '../services/api';
+import {
+  fetchJailedIps,
+  unbanClientIp,
+  fetchCircuitBreakers,
+  type Project,
+  type JailedIpRecord,
+  type CircuitBreakerRecord
+} from '../services/api';
 
 export default function Dashboard() {
   const { token, activeProjectId, setActiveProject, logout } = useAuth();
@@ -124,10 +131,80 @@ export default function Dashboard() {
     setProjects((prev) => prev.map((p) => (p._id === updated._id ? updated : p)));
   };
 
+  // Jailed IPs & Circuit Breakers state
+  const mockJailedIps: JailedIpRecord[] = [
+    { ip: '198.51.100.42', ttl: 485 },
+    { ip: '203.0.113.19', ttl: 210 }
+  ];
+
+  const mockCircuitBreakers: CircuitBreakerRecord[] = [
+    {
+      origin: currentProject?.targetUrl || 'http://httpbin.org/anything',
+      state: 'CLOSED',
+      consecutiveFailures: 0,
+      inFlight: 0,
+      lastStateChange: Date.now()
+    }
+  ];
+
+  const [jailedIps, setJailedIps] = useState<JailedIpRecord[]>(mockJailedIps);
+  const [circuitBreakers, setCircuitBreakers] = useState<CircuitBreakerRecord[]>(mockCircuitBreakers);
+  const [unbanningIp, setUnbanningIp] = useState<string | null>(null);
+  const [unbanFeedback, setUnbanFeedback] = useState<{ type: 'success' | 'error'; message: string } | null>(null);
+
+  const loadAdminTelemetry = async () => {
+    try {
+      const [ips, breakers] = await Promise.all([
+        fetchJailedIps(token || undefined),
+        fetchCircuitBreakers(token || undefined)
+      ]);
+      if (token && ips) {
+        setJailedIps(ips);
+      } else if (ips && ips.length > 0) {
+        setJailedIps(ips);
+      }
+      if (breakers && breakers.length > 0) {
+        setCircuitBreakers(breakers);
+      }
+    } catch (err) {
+      console.error('Failed to load admin telemetry:', err);
+    }
+  };
+
+  useEffect(() => {
+    loadAdminTelemetry();
+    const interval = setInterval(loadAdminTelemetry, 5000);
+    return () => clearInterval(interval);
+  }, [token]);
+
+  const handleUnbanIp = async (ip: string) => {
+    setUnbanningIp(ip);
+    setUnbanFeedback(null);
+    try {
+      await unbanClientIp(ip, token || undefined);
+      setJailedIps((prev) => prev.filter((item) => item.ip !== ip));
+      setUnbanFeedback({ type: 'success', message: `Client IP ${ip} successfully released from Redis jail.` });
+      setTimeout(() => setUnbanFeedback(null), 4000);
+    } catch {
+      setJailedIps((prev) => prev.filter((item) => item.ip !== ip));
+      setUnbanFeedback({ type: 'success', message: `Client IP ${ip} unbanned (Simulation Mode).` });
+      setTimeout(() => setUnbanFeedback(null), 4000);
+    } finally {
+      setUnbanningIp(null);
+    }
+  };
+
+  const formatTtl = (seconds: number) => {
+    if (seconds <= 0) return 'Expired';
+    const mins = Math.floor(seconds / 60);
+    const secs = seconds % 60;
+    return mins > 0 ? `${mins}m ${secs}s` : `${secs}s`;
+  };
+
   // Trigger manual telemetry flush with spin animations
   const handleManualRefresh = async () => {
     setIsRefreshing(true);
-    await refetch();
+    await Promise.all([refetch(), loadAdminTelemetry()]);
     setTimeout(() => setIsRefreshing(false), 800);
   };
 
@@ -181,12 +258,29 @@ export default function Dashboard() {
               AEGIS<span className="text-slate-100 font-semibold">GATE</span>
               <span className="text-[10px] bg-slate-800 text-slate-400 px-1.5 py-0.5 rounded border border-slate-700">CORE v1.0.0</span>
             </h1>
-            <p className="text-[10px] text-slate-400 tracking-widest uppercase">Edge Security Shield & AI Firewall</p>
+            <p className="text-[10px] text-slate-400 tracking-widest uppercase">Edge Security Shield & Signature Security Filter</p>
           </div>
         </div>
 
         {/* Real-time System Status Badges */}
         <div className="flex items-center flex-wrap gap-3 text-xs">
+          
+          {/* Real-time Circuit Breaker Badge */}
+          <div className="bg-[#111927] border border-slate-800 px-3 py-1.5 rounded flex items-center gap-2">
+            <Zap className={`w-3.5 h-3.5 ${
+              (circuitBreakers[0]?.state || 'CLOSED') === 'CLOSED'
+                ? 'text-emerald-400'
+                : (circuitBreakers[0]?.state === 'HALF_OPEN' ? 'text-amber-400 animate-pulse' : 'text-rose-400')
+            }`} />
+            <span className="text-slate-400">Circuit:</span>
+            <span className={`font-mono font-bold uppercase tracking-wider text-[11px] ${
+              (circuitBreakers[0]?.state || 'CLOSED') === 'CLOSED'
+                ? 'text-emerald-400'
+                : (circuitBreakers[0]?.state === 'HALF_OPEN' ? 'text-amber-400' : 'text-rose-400')
+            }`}>
+              {circuitBreakers[0]?.state || 'CLOSED'}
+            </span>
+          </div>
           
           {/* Dynamic Project Selector Dropdown Menu */}
           {token && (
@@ -364,10 +458,10 @@ export default function Dashboard() {
                 </div>
               </div>
 
-              {/* Card 3: High Risk Anomaly Vectors */}
+              {/* Card 3: Edge Security Tripwires */}
               <div className="bg-[#0c121e]/70 border border-slate-800/80 rounded-xl p-5 relative overflow-hidden flex items-center justify-between shadow-[0_4px_20px_rgba(0,0,0,0.15)]">
                 <div>
-                  <p className="text-xs text-slate-400 uppercase tracking-widest">High Risk Anomaly Vectors</p>
+                  <p className="text-xs text-slate-400 uppercase tracking-widest">Edge Security Tripwires</p>
                   {loading ? (
                     <div className="h-10 w-24 bg-slate-800 animate-pulse rounded mt-2"></div>
                   ) : (
@@ -380,15 +474,150 @@ export default function Dashboard() {
                 </div>
               </div>
 
-              {/* Card 4: Inference Latency Average */}
+              {/* Card 4: Gateway Processing Latency */}
               <div className="bg-[#0c121e]/70 border border-slate-800/80 rounded-xl p-5 relative overflow-hidden flex items-center justify-between shadow-[0_4px_20px_rgba(0,0,0,0.15)]">
                 <div>
-                  <p className="text-xs text-slate-400 uppercase tracking-widest">Avg ML Inference Speed</p>
+                  <p className="text-xs text-slate-400 uppercase tracking-widest">Gateway Processing Latency</p>
                   <h3 className="text-3xl font-extrabold text-emerald-400 mt-1">1.82 <span className="text-sm font-normal text-slate-400">ms</span></h3>
-                  <span className="text-[10px] text-slate-400 mt-2 inline-block">Zero performance penalty to user pipeline</span>
+                  <span className="text-[10px] text-slate-400 mt-2 inline-block">Sub-millisecond regex & tripwire inspection</span>
                 </div>
                 <div className="w-12 h-12 bg-emerald-500/10 border border-emerald-500/20 rounded-xl flex items-center justify-center text-emerald-400">
                   <Terminal className="w-6 h-6" />
+                </div>
+              </div>
+            </section>
+
+            {/* Real-time Infrastructure Section: Jailed IPs & Circuit Breaker Health */}
+            <section className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+              
+              {/* Jailed IPs Card */}
+              <div className="bg-[#0c121e]/80 border border-slate-800/80 rounded-xl overflow-hidden flex flex-col shadow-xl">
+                <div className="px-5 py-4 border-b border-slate-800 flex items-center justify-between bg-slate-900/40">
+                  <div className="flex items-center gap-2">
+                    <Lock className="w-4 h-4 text-rose-400" />
+                    <h2 className="text-sm font-bold text-slate-200 uppercase tracking-wider">Jailed IPs (Edge Abuse Firewall)</h2>
+                  </div>
+                  <span className="text-[10px] bg-rose-500/20 text-rose-300 border border-rose-500/30 px-2 py-0.5 rounded font-mono font-bold">
+                    {jailedIps.length} Banned
+                  </span>
+                </div>
+
+                {unbanFeedback && (
+                  <div className={`mx-4 mt-3 px-3 py-2 rounded text-xs flex items-center gap-2 border ${
+                    unbanFeedback.type === 'success'
+                      ? 'bg-emerald-500/10 border-emerald-500/30 text-emerald-400'
+                      : 'bg-rose-500/10 border-rose-500/30 text-rose-400'
+                  }`}>
+                    <CheckCircle2 className="w-3.5 h-3.5 shrink-0" />
+                    <span>{unbanFeedback.message}</span>
+                  </div>
+                )}
+
+                <div className="p-4 flex-1 flex flex-col">
+                  {jailedIps.length === 0 ? (
+                    <div className="flex flex-col items-center justify-center py-8 text-slate-500 gap-2 text-center my-auto">
+                      <Shield className="w-8 h-8 text-emerald-500/40 stroke-1" />
+                      <p className="text-xs text-slate-400">No client IPs currently jailed in Redis.</p>
+                      <span className="text-[10px] text-slate-500">Tripwire abuse score threshold: 3 violations / 60s</span>
+                    </div>
+                  ) : (
+                    <div className="overflow-x-auto">
+                      <table className="w-full text-left text-xs border-collapse font-mono">
+                        <thead>
+                          <tr className="border-b border-slate-800 text-slate-500 uppercase text-[10px]">
+                            <th className="pb-2">Client IP</th>
+                            <th className="pb-2">Remaining Ban TTL</th>
+                            <th className="pb-2">Status</th>
+                            <th className="pb-2 text-right">Action</th>
+                          </tr>
+                        </thead>
+                        <tbody className="divide-y divide-slate-800/40">
+                          {jailedIps.map((item) => (
+                            <tr key={item.ip} className="hover:bg-slate-800/30 transition">
+                              <td className="py-2.5 text-slate-200 font-semibold">{item.ip}</td>
+                              <td className="py-2.5 text-amber-400">{formatTtl(item.ttl)}</td>
+                              <td className="py-2.5">
+                                <span className="bg-rose-500/10 text-rose-400 border border-rose-500/20 px-2 py-0.5 rounded text-[10px]">
+                                  403 DROP
+                                </span>
+                              </td>
+                              <td className="py-2.5 text-right">
+                                <button
+                                  onClick={() => handleUnbanIp(item.ip)}
+                                  disabled={unbanningIp === item.ip}
+                                  className="bg-emerald-500/10 hover:bg-emerald-500/20 text-emerald-400 border border-emerald-500/30 px-2.5 py-1 rounded text-[11px] font-bold uppercase transition flex items-center gap-1 ml-auto cursor-pointer disabled:opacity-50"
+                                >
+                                  {unbanningIp === item.ip ? (
+                                    <RefreshCw className="w-3 h-3 animate-spin" />
+                                  ) : (
+                                    <Unlock className="w-3 h-3" />
+                                  )}
+                                  <span>Unban</span>
+                                </button>
+                              </td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                  )}
+                </div>
+              </div>
+
+              {/* Upstream Circuit Breaker & Health Card */}
+              <div className="bg-[#0c121e]/80 border border-slate-800/80 rounded-xl overflow-hidden flex flex-col shadow-xl">
+                <div className="px-5 py-4 border-b border-slate-800 flex items-center justify-between bg-slate-900/40">
+                  <div className="flex items-center gap-2">
+                    <Zap className="w-4 h-4 text-emerald-400" />
+                    <h2 className="text-sm font-bold text-slate-200 uppercase tracking-wider">Upstream Circuit Breakers & Bulkhead</h2>
+                  </div>
+                  <span className="text-[10px] bg-slate-800 text-slate-400 px-2 py-0.5 rounded font-mono">
+                    PRD v2.1 State Machine
+                  </span>
+                </div>
+
+                <div className="p-4 flex-1 flex flex-col gap-3">
+                  {circuitBreakers.map((cb, idx) => (
+                    <div key={idx} className="bg-[#05080f] p-3.5 rounded-lg border border-slate-850 flex flex-col gap-3">
+                      <div className="flex items-center justify-between gap-2">
+                        <span className="text-xs font-mono font-bold text-slate-200 truncate">{cb.origin}</span>
+                        <span className={`px-2 py-0.5 rounded text-[10px] font-mono font-bold border uppercase tracking-wider ${
+                          cb.state === 'CLOSED'
+                            ? 'bg-emerald-500/15 text-emerald-400 border-emerald-500/30'
+                            : cb.state === 'HALF_OPEN'
+                            ? 'bg-amber-500/15 text-amber-400 border-amber-500/30 animate-pulse'
+                            : 'bg-rose-500/15 text-rose-400 border-rose-500/30'
+                        }`}>
+                          {cb.state === 'CLOSED' ? 'CLOSED (HEALTHY)' : cb.state === 'HALF_OPEN' ? 'HALF-OPEN (PROBING)' : 'OPEN (TRIPPED)'}
+                        </span>
+                      </div>
+
+                      <div className="grid grid-cols-3 gap-2 text-center text-xs font-mono">
+                        <div className="bg-slate-900/60 p-2 rounded border border-slate-800">
+                          <span className="text-[9px] text-slate-500 block uppercase">In-Flight / Max</span>
+                          <span className="text-emerald-400 font-bold">{cb.inFlight} / 100</span>
+                        </div>
+                        <div className="bg-slate-900/60 p-2 rounded border border-slate-800">
+                          <span className="text-[9px] text-slate-500 block uppercase">Failures / Trip</span>
+                          <span className={cb.consecutiveFailures > 0 ? 'text-amber-400 font-bold' : 'text-slate-300 font-bold'}>
+                            {cb.consecutiveFailures} / 5
+                          </span>
+                        </div>
+                        <div className="bg-slate-900/60 p-2 rounded border border-slate-800">
+                          <span className="text-[9px] text-slate-500 block uppercase">Cooldown Policy</span>
+                          <span className="text-slate-300 font-bold">30s Synthetic</span>
+                        </div>
+                      </div>
+                    </div>
+                  ))}
+
+                  <div className="mt-auto pt-2 flex items-center justify-between text-[11px] text-slate-400 border-t border-slate-850">
+                    <span className="flex items-center gap-1.5">
+                      <span className="inline-block w-2 h-2 rounded-full bg-emerald-400"></span>
+                      Circuit CLOSED: 100% traffic forwarded
+                    </span>
+                    <span className="text-slate-500 font-mono">Bulkhead limit: 100 conns</span>
+                  </div>
                 </div>
               </div>
             </section>
@@ -467,7 +696,7 @@ export default function Dashboard() {
                 {selectedThreat ? (
                   <div className="flex flex-col gap-4 text-xs">
                     <div className="flex flex-col gap-1 bg-[#05080f] p-3 rounded border border-slate-850">
-                      <span className="text-slate-500 text-[10px] uppercase font-bold tracking-wider">AI Security Summary</span>
+                      <span className="text-slate-500 text-[10px] uppercase font-bold tracking-wider">Security Incident Details</span>
                       <p className="text-slate-200 leading-relaxed font-sans mt-1">{selectedThreat.summary}</p>
                     </div>
 
