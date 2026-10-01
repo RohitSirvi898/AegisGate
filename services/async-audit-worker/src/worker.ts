@@ -1,226 +1,315 @@
 import dotenv from 'dotenv';
 import mongoose from 'mongoose';
 import amqplib from 'amqplib';
-import { ThreatLogModel } from './models/threatLog.js';
-import { DeadLetterModel } from './models/deadLetter.js';
-import { sendWebhookAlerts } from './utils/webhookNotifier.js';
-import { sanitizePayload } from './utils/piiScrubber.js';
+import crypto from 'node:crypto';
+import { AuditLogModel } from './models/AuditLog.js';
+import { sendWebhookAlerts } from './utils/webhooks.js';
 
 dotenv.config();
 
 const MONGO_URI = process.env.MONGO_URI || '';
 const RABBITMQ_URL = process.env.RABBITMQ_URL || 'amqp://localhost:5672';
 
-const QUEUE_NAME = 'blocked_threats_queue';
-const DLX_EXCHANGE = 'aegis_dlx';
-const DLX_QUEUE = 'aegis_dead_letter';
-const DLX_ROUTING_KEY = 'dead_letter';
+export const AUDIT_QUEUE = 'aegis.audit';
+export const DLX_EXCHANGE = 'aegis_dlx';
+export const DLX_QUEUE = 'aegis.audit.dlq';
+export const DLX_ROUTING_KEY = 'dead_letter';
+
+// PRD v2.1 Section 4.11 Configuration Defaults
+export const WORKER_BATCH_SIZE = Number(process.env.WORKER_BATCH_SIZE) || 20;
+export const WORKER_BATCH_FLUSH_MS = Number(process.env.WORKER_BATCH_FLUSH_MS) || 500;
+export const WORKER_PREFETCH = Number(process.env.WORKER_PREFETCH) || 50;
 
 let connection: amqplib.ChannelModel | null = null;
 let channel: amqplib.Channel | null = null;
+let consumerTag: string | null = null;
 
-// In-memory batching buffer
-let messageBuffer: { msg: amqplib.ConsumeMessage; payload: any }[] = [];
-let lastFlushTime = Date.now();
+// In-memory batch accumulation
+interface BatchItem {
+    msg: amqplib.ConsumeMessage;
+    doc: any;
+    payload: any;
+}
+
+let messageBatch: BatchItem[] = [];
+let batchTimer: NodeJS.Timeout | null = null;
+let isFlushing = false;
 
 /**
- * Extracts retry count from RabbitMQ x-death header.
+ * Returns the current in-memory batch size (for testing/diagnostics).
  */
-const getRetryCount = (msg: amqplib.ConsumeMessage): number => {
-    const xDeath = msg.properties.headers?.['x-death'];
-    if (Array.isArray(xDeath) && xDeath.length > 0) {
-        return Number(xDeath[0].count) || xDeath.length;
+export function getBatchSize(): number {
+    return messageBatch.length;
+}
+
+/**
+ * Resets the in-memory batch buffer (for testing/diagnostics).
+ */
+export function resetBatch(): void {
+    messageBatch = [];
+    if (batchTimer) {
+        clearTimeout(batchTimer);
+        batchTimer = null;
     }
-    return 0;
-};
+    isFlushing = false;
+}
 
 /**
- * Flushes batched threat payloads to MongoDB Atlas.
- * Applies local PII redaction engine on payloads.
- * Triggers Slack & Discord webhook alerts for CRITICAL/HIGH threats.
- * Routes poison messages to aegis_dead_letter DLQ on repeated failures.
+ * Sets the active channel instance (useful for unit testing).
  */
-export const flushBuffer = async (): Promise<void> => {
-    if (messageBuffer.length === 0) {
+export function setWorkerChannel(mockChannel: any): void {
+    channel = mockChannel;
+}
+
+/**
+ * Transforms an incoming message payload into a standardized AuditLog document.
+ */
+export function transformPayloadToDoc(payload: any): any {
+    return {
+        requestId: payload.requestId || crypto.randomUUID(),
+        projectId: payload.projectId || 'aegis_default_project',
+        apiKeyId: payload.apiKeyId || undefined,
+        ip: payload.ip || payload.clientIp || '127.0.0.1',
+        method: payload.method || 'GET',
+        path: payload.path || payload.endpoint || '/',
+        rule: payload.rule || payload.attackVector || undefined,
+        status: payload.status ?? payload.statusCode ?? 200,
+        upstreamOrigin: payload.upstreamOrigin || undefined,
+        headers: payload.headers && typeof payload.headers === 'object' ? payload.headers : undefined,
+        body: payload.body ?? payload.rawBody ?? undefined,
+        createdAt: payload.timestamp ? new Date(payload.timestamp) : new Date()
+    };
+}
+
+/**
+ * Flushes the accumulated batch of messages into MongoDB using bulk insert.
+ * Acknowledges all messages in batch upon success.
+ * If MongoDB fails, pauses consumption and retries with exponential backoff.
+ */
+export async function flushBatch(): Promise<void> {
+    if (messageBatch.length === 0 || isFlushing) {
         return;
     }
 
-    // Atomic snapshot and reset of the buffer
-    const batch = [...messageBuffer];
-    messageBuffer = [];
-    lastFlushTime = Date.now();
+    if (batchTimer) {
+        clearTimeout(batchTimer);
+        batchTimer = null;
+    }
 
-    console.log(`⚡ [Buffer Flush] Initiating processing flush for batch of ${batch.length} threat logs.`);
+    isFlushing = true;
+    const currentBatch = [...messageBatch];
+    messageBatch = [];
 
     try {
-        const dbDocs: any[] = [];
-        const notificationQueue: any[] = [];
+        const docs = currentBatch.map(item => item.doc);
 
-        for (const item of batch) {
-            const rawBody = item.payload.rawBody ? sanitizePayload(item.payload.rawBody) : '';
-            const attackVector = item.payload.attackVector || 'Security Filter Violation';
-            const severity = item.payload.severity || 'HIGH';
-            const summary = item.payload.summary || `Blocked threat pattern: ${attackVector}`;
+        // Bulk insert into MongoDB with ordered: false for maximum throughput
+        await AuditLogModel.insertMany(docs, { ordered: false });
+        console.log(`💾 [MongoDB Bulk Insert] Successfully persisted ${docs.length} audit logs.`);
 
-            const doc = {
-                projectId: item.payload.projectId || 'aegis_default_project',
-                clientIp: item.payload.clientIp || 'unknown',
-                endpoint: item.payload.endpoint || '',
-                method: item.payload.method || 'POST',
-                timestamp: item.payload.timestamp ? new Date(item.payload.timestamp) : new Date(),
-                rawBody: typeof rawBody === 'string' ? rawBody : JSON.stringify(rawBody),
-                attackVector,
-                severity,
-                summary,
-                createdAt: new Date()
-            };
+        // Acknowledge all messages in the batch up to and including the last message
+        const lastMsg = currentBatch[currentBatch.length - 1]!.msg;
+        channel?.ack(lastMsg, true);
 
-            dbDocs.push(doc);
-
-            if (item.payload.slackWebhookUrl || item.payload.discordWebhookUrl) {
-                notificationQueue.push({
-                    ...doc,
-                    timestamp: item.payload.timestamp || new Date().toISOString(),
-                    slackWebhookUrl: item.payload.slackWebhookUrl,
-                    discordWebhookUrl: item.payload.discordWebhookUrl
+        // Asynchronously dispatch webhook alerts for high-severity blocked requests
+        for (const item of currentBatch) {
+            if (item.doc.status === 403 || item.doc.rule === 'request_blocked') {
+                sendWebhookAlerts({
+                    projectId: item.doc.projectId,
+                    clientIp: item.doc.ip,
+                    path: item.doc.path,
+                    method: item.doc.method,
+                    status: item.doc.status,
+                    rule: item.doc.rule,
+                    summary: item.payload?.summary,
+                    body: item.doc.body,
+                    timestamp: item.doc.createdAt?.toISOString(),
+                    slackWebhookUrl: item.payload?.slackWebhookUrl,
+                    discordWebhookUrl: item.payload?.discordWebhookUrl
+                }).catch(err => {
+                    console.error('[Webhook Dispatch Silent Catch]:', err?.message || err);
                 });
             }
         }
-
-        // Persist all scrubbed threat records to MongoDB in a bulk write / insert
-        if (dbDocs.length > 0) {
-            await ThreatLogModel.insertMany(dbDocs);
-            console.log(`💾 [Database] Successfully wrote ${dbDocs.length} telemetry records to MongoDB.`);
-        }
-
-        // Dispatch Slack & Discord webhook alerts asynchronously
-        for (const notif of notificationQueue) {
-            sendWebhookAlerts(notif).catch((err) => {
-                console.error('[Webhook Dispatch Silent Catch]:', err?.message || err);
+    } catch (dbErr: any) {
+        console.error('❌ [MongoDB Batch Write Fault]:', dbErr?.message || dbErr);
+        // Put unacknowledged messages into the outage handler
+        await handleMongoOutage(currentBatch);
+    } finally {
+        isFlushing = false;
+        // If messages arrived during flush and reached threshold, trigger immediate flush
+        if (messageBatch.length >= WORKER_BATCH_SIZE) {
+            setImmediate(() => {
+                flushBatch().catch(() => {});
             });
         }
+    }
+}
 
-        // Acknowledge all processed messages from RabbitMQ
-        for (const item of batch) {
-            channel?.ack(item.msg);
-        }
-        console.log(`🐇 [Queue] Acknowledged ${batch.length} threat logs in RabbitMQ.`);
-    } catch (error: any) {
-        console.error('[Worker Analytics Fault - Inspecting Poison Message Retry Limits]');
-        console.error('Error Trace:', error.message || error);
-
-        // Fail-Closed Poison Message Routing via RabbitMQ DLX
-        for (const item of batch) {
-            try {
-                const retryCount = getRetryCount(item.msg);
-                if (retryCount < 3) {
-                    console.warn(`🐇 [Queue Requeue] Message retry attempt ${retryCount + 1}/3. Requeueing...`);
-                    channel?.nack(item.msg, false, true);
-                } else {
-                    console.error(`☠️ [Poison Message Detected] Exceeded ${retryCount} retries. Routing to aegis_dead_letter DLQ.`);
-                    
-                    // Persist poison message payload into DeadLetter collection for DLQ monitoring UI
-                    await DeadLetterModel.create({
-                        projectId: item.payload?.projectId || 'aegis_default_project',
-                        clientIp: item.payload?.clientIp || 'unknown',
-                        endpoint: item.payload?.endpoint || '',
-                        method: item.payload?.method || 'POST',
-                        timestamp: item.payload?.timestamp ? new Date(item.payload.timestamp) : new Date(),
-                        rawBody: item.payload?.rawBody || JSON.stringify(item.payload || {}),
-                        errorReason: error?.message || 'Exceeded maximum retries (3/3)',
-                        retryCount: retryCount || 3
-                    }).catch((dlErr) => console.error('[DeadLetter Store Exception]:', dlErr.message));
-
-                    // Reject without requeueing -> RabbitMQ routes to aegis_dlx -> aegis_dead_letter DLQ
-                    channel?.nack(item.msg, false, false);
-                }
-            } catch (nackError: any) {
-                console.error('🐇 [Queue Nack Failure] Failed to release message:', nackError.message);
-            }
+/**
+ * Handles MongoDB connectivity outage:
+ * 1. Pauses RabbitMQ consumer (channel.cancel).
+ * 2. Does NOT ack the batch (messages remain in RabbitMQ for redelivery).
+ * 3. Retries with exponential backoff (1s, 2s, 4s, up to 30s max).
+ * 4. Once reconnected, acks batch and resumes consumer.
+ */
+export async function handleMongoOutage(
+    failedBatch: BatchItem[],
+    initialBackoffMs = Number(process.env.DB_BACKOFF_INIT_MS) || 1000
+): Promise<void> {
+    // 1. Pause channel consumption so uncommitted messages don't pile up
+    if (channel && consumerTag) {
+        try {
+            await channel.cancel(consumerTag);
+            consumerTag = null;
+            console.warn('⏸️ [Consumer Paused] Paused RabbitMQ consumption due to MongoDB failure.');
+        } catch (err: any) {
+            console.error('[Consumer Cancel Error]:', err?.message || err);
         }
     }
-};
+
+    // 2. Retry with exponential backoff
+    let backoffMs = initialBackoffMs;
+    const maxBackoffMs = 30000;
+    let recovered = false;
+
+    while (!recovered) {
+        console.warn(`⏳ [DB Backoff] Retrying MongoDB write in ${backoffMs}ms...`);
+        await new Promise(resolve => setTimeout(resolve, backoffMs));
+
+        try {
+            const docs = failedBatch.map(b => b.doc);
+            await AuditLogModel.insertMany(docs, { ordered: false });
+            recovered = true;
+            console.log(`✅ [MongoDB Recovered] Persisted ${docs.length} audit logs after outage.`);
+
+            // Acknowledge the batch now that MongoDB accepted the records
+            const lastMsg = failedBatch[failedBatch.length - 1]!.msg;
+            channel?.ack(lastMsg, true);
+
+            // 3. Resume consumer
+            await resumeConsumer();
+        } catch (retryErr: any) {
+            console.error('❌ [MongoDB Retry Failed]:', retryErr?.message || retryErr);
+            backoffMs = Math.min(backoffMs * 2, maxBackoffMs);
+        }
+    }
+}
+
+/**
+ * Resumes RabbitMQ message consumption once dependencies are healthy.
+ */
+export async function resumeConsumer(): Promise<void> {
+    if (!channel || consumerTag) return;
+    try {
+        const consumeResult = await channel.consume(AUDIT_QUEUE, onMessage, { noAck: false });
+        consumerTag = consumeResult.consumerTag;
+        console.log(`▶️ [Consumer Resumed] Actively consuming from '${AUDIT_QUEUE}'.`);
+    } catch (err: any) {
+        console.error('❌ [Resume Consumer Error]:', err?.message || err);
+    }
+}
+
+/**
+ * Core message intake handler:
+ * - Detects poison messages / invalid JSON and routes to DLQ (nack with requeue=false).
+ * - Transforms payload into AuditLog schema.
+ * - Flushes immediately when batch reaches 20, or schedules 500ms timeout flush.
+ */
+export async function onMessage(msg: amqplib.ConsumeMessage | null): Promise<void> {
+    if (!msg) return;
+
+    let payload: any;
+    try {
+        payload = JSON.parse(msg.content.toString());
+    } catch (parseErr: any) {
+        console.error('❌ [Poison Message - Bad JSON] Routing to DLQ:', parseErr.message);
+        // Reject without requeueing -> RabbitMQ routes to aegis.audit.dlq via DLX
+        channel?.nack(msg, false, false);
+        return;
+    }
+
+    if (!payload || typeof payload !== 'object' || Array.isArray(payload)) {
+        console.error('❌ [Poison Message - Corrupt Schema] Routing to DLQ.');
+        channel?.nack(msg, false, false);
+        return;
+    }
+
+    const doc = transformPayloadToDoc(payload);
+    messageBatch.push({ msg, doc, payload });
+
+    // Condition 1: Batch size reached (WORKER_BATCH_SIZE = 20) -> Flush immediately
+    if (messageBatch.length >= WORKER_BATCH_SIZE) {
+        await flushBatch();
+        return;
+    }
+
+    // Condition 2: 500ms elapsed since first message in batch -> Timer flush
+    if (!batchTimer) {
+        batchTimer = setTimeout(() => {
+            batchTimer = null;
+            flushBatch().catch(err => {
+                console.error('[Scheduled Batch Flush Error]:', err?.message || err);
+            });
+        }, WORKER_BATCH_FLUSH_MS);
+    }
+}
 
 /**
  * Boots the daemon worker process.
  */
 export const startWorker = async (): Promise<void> => {
     try {
-        console.log('🔌 Connecting to MongoDB...');
+        console.log('🔌 Connecting to MongoDB Atlas...');
         await mongoose.connect(MONGO_URI);
         console.log('💾 Connected to MongoDB successfully.');
 
-        console.log('🔌 Connecting to RabbitMQ...');
+        console.log('🔌 Connecting to RabbitMQ Broker...');
         connection = await amqplib.connect(RABBITMQ_URL);
         channel = await connection.createChannel();
 
-        // Declare Dead-Letter Exchange & Queue
+        // 1. Assert Dead-Letter Exchange (DLX) & Queue
         await channel.assertExchange(DLX_EXCHANGE, 'direct', { durable: true });
         await channel.assertQueue(DLX_QUEUE, { durable: true });
         await channel.bindQueue(DLX_QUEUE, DLX_EXCHANGE, DLX_ROUTING_KEY);
 
-        // Assert main queue with DLX routing arguments
-        await channel.assertQueue(QUEUE_NAME, {
+        // 2. Assert Durable 'aegis.audit' Queue with DLX & Drop-Head Overflow
+        await channel.assertQueue(AUDIT_QUEUE, {
             durable: true,
             arguments: {
+                'x-max-length': 100000,
+                'x-overflow': 'drop-head',
                 'x-dead-letter-exchange': DLX_EXCHANGE,
                 'x-dead-letter-routing-key': DLX_ROUTING_KEY
             }
         });
 
-        await channel.prefetch(20);
+        // 3. Set Channel Prefetch to 50 strictly per PRD Section 4.11
+        await channel.prefetch(WORKER_PREFETCH);
+        console.log(`🐇 RabbitMQ prefetch configured to ${WORKER_PREFETCH}.`);
 
-        console.log('🐇 Connected to RabbitMQ successfully. DLX engaged. Prefetch set to 20.');
+        // 4. Start consuming from aegis.audit
+        const consumeResult = await channel.consume(AUDIT_QUEUE, onMessage, { noAck: false });
+        consumerTag = consumeResult.consumerTag;
+        console.log(`📥 Subscribed to '${AUDIT_QUEUE}'. Batching at ${WORKER_BATCH_SIZE} msgs or ${WORKER_BATCH_FLUSH_MS}ms.`);
 
-        setInterval(async () => {
-            if (messageBuffer.length > 0 && Date.now() - lastFlushTime >= 30000) {
-                console.log('⏱️ [Timer Flush] 30 seconds rolling timer elapsed. Flushing buffer...');
-                await flushBuffer();
-            }
-        }, 1000);
-
-        console.log('📥 Start consuming messages from blocked_threats_queue...');
-
-        await channel.consume(
-            QUEUE_NAME,
-            async (msg) => {
-                if (!msg) return;
-
-                try {
-                    const payload = JSON.parse(msg.content.toString());
-                    messageBuffer.push({ msg, payload });
-
-                    console.log(`📥 Received threat log. Buffer status: ${messageBuffer.length}/10`);
-
-                    if (messageBuffer.length >= 10) {
-                        console.log('🚀 [Capacity Flush] Buffer reached 10 records. Triggering flush...');
-                        await flushBuffer();
-                    }
-                } catch (err: any) {
-                    console.error('❌ [Consume Error] Malformed message rejected:', err.message);
-
-                    // Persist malformed message into DeadLetter model for UI inspection
-                    await DeadLetterModel.create({
-                        projectId: 'aegis_default_project',
-                        clientIp: 'unknown',
-                        endpoint: '/malformed-payload',
-                        method: 'POST',
-                        timestamp: new Date(),
-                        rawBody: msg.content.toString(),
-                        errorReason: `Malformed JSON payload: ${err.message}`,
-                        retryCount: 3
-                    }).catch((dlErr) => console.error('[DeadLetter Store Exception]:', dlErr.message));
-
-                    // Immediately nack without requeuing so malformed JSON goes straight to DLQ
-                    channel?.nack(msg, false, false);
+        // Also consume legacy queue if present for backward compatibility
+        try {
+            await channel.assertQueue('blocked_threats_queue', {
+                durable: true,
+                arguments: {
+                    'x-dead-letter-exchange': DLX_EXCHANGE,
+                    'x-dead-letter-routing-key': DLX_ROUTING_KEY
                 }
-            },
-            { noAck: false }
-        );
+            });
+            await channel.consume('blocked_threats_queue', onMessage, { noAck: false });
+        } catch {
+            // Ignore if legacy queue is not needed
+        }
 
-        console.log('🛡️ AegisGate Control Plane Background Worker is fully online.');
+        console.log('🛡️ AegisGate Async Audit Worker is fully online.');
     } catch (error: any) {
-        console.error('❌ [Worker Initialization Failure] Severe boot failure:', error.message);
+        console.error('❌ [Worker Boot Failure] Critical exception:', error?.message || error);
         process.exit(1);
     }
 };
