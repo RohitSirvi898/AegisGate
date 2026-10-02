@@ -1,309 +1,239 @@
-# 🛡️ AegisGate - Multi-Tenant Edge Security Shield & AI Anomaly Detection Pipeline
+# 🛡️ AegisGate - Resilient API Security Gateway & Reverse Proxy
 
-AegisGate is a high-performance, sub-100ms multi-tenant cybersecurity edge ingress proxy, stateless JWT authentication gateway, atomic O(1) Redis-driven rate limiter, and machine-learning AI firewall. Featuring 300s TTL Redis hot-path lookup caching, non-blocking asynchronous RabbitMQ telemetry logging, and HTTP socket connection pooling (`keepAlive: true`, `maxSockets: 100`), it streams live security intelligence into a cybersecurity-themed React console workspace.
+AegisGate is a lightweight reverse-proxy API gateway written in Node.js and TypeScript, designed to centralize critical perimeter concerns for microservice architectures: rate limiting, authentication verification, request pattern filtering, response caching, and upstream failure isolation.
 
-* **Dual-Layer PII Privacy Protection**: Masks sensitive fields (`password`, `credit_card`, `ssn`, `email`) locally before storing telemetry logs.
-* **LLM Privacy Opt-Out (`enableLLMAudit: false`)**: Opt out of external LLM threat classification to satisfy strict privacy requirements (e.g., HIPAA/GDPR); threats are logged locally as `UNANALYZED_PRIVACY_OPT_OUT`.
-* **Dead-Letter Queue (DLQ) & Resilience**: Routes unprocessable poison payloads to `aegis_dead_letter` after 3 failed retries, with full re-queue and purge controls in the Admin Dashboard.
-* **Real-Time Webhook Alerting**: Dispatches Slack Block Kit and Discord Embed notifications for `CRITICAL` and `HIGH` severity attack vectors.
+Built as an educational and practical system-design implementation, it acts as a transparent boundary shield in front of backend containers without requiring application-level code modifications.
 
 ---
 
-## 📐 Unified Cybersecurity System Architecture
+## 📐 System Architecture (Data & Telemetry Planes)
 
 ```mermaid
 %%{init: {'flowchart': {'htmlLabels': true, 'curve': 'bump'}, 'theme': 'base', 'themeVariables': { 'primaryColor': '#1e293b', 'primaryTextColor': '#f8fafc', 'primaryBorderColor': '#334155', 'lineColor': '#94a3b8'}}}%%
 graph LR
-    %% External Entities
-    Client("🌐 Frontend API /<br/>HTTP Client")
-    DashApp("💻 admin-dashboard<br/>React App")
+    %% Clients
+    Client("🌐 Client API /<br/>HTTP Fetch")
+    Console("💻 admin-dashboard<br/>React Console")
 
-    %% Core Gateway Subgraph
-    subgraph GWCore ["🔐 Edge Ingress (gateway-core)"]
+    %% Core Data Plane
+    subgraph DataPlane ["🔐 Edge Ingress Pipeline (gateway-core :8080)"]
         direction TB
-        Ingress["Edge Proxy<br/>(Port 8080)"]
-        JWT{"Stateless<br/>JWT Auth"}
-        Redis[("Redis<br/>Rate Limit")]
-        SecFilter{"Security Filter<br/>(Regex Threat Engine)"}
-        Proxy["Proxy Forwarder<br/>(Upstream)"]
+        PayloadCap["1. Ingress 100KB Cap<br/>(Header & Stream Byte Counter)"]
+        IPExtract["2. Client IP Derivation<br/>(Socket IP / Trusted CIDRs / IPv6 /64)"]
+        IPJail{"3. Redis IP Jail Check<br/>(10-Min Ban / Abuse Scoring)"}
+        AuthCheck{"4. Auth & Scope Gate<br/>(Stateless JWT / Hashed ag_live_ Keys)"}
+        RateLimit{"5. Atomic Redis Rate Limiter<br/>(O(1) Lua Script)"}
+        Tripwire{"6. Security Tripwire<br/>(SQLi / XSS RE2 Pattern Match)"}
+        CacheCheck{"7. Response Cache<br/>(Single-Flight / Whitelisted GET)"}
+        Breaker{"8. Circuit Breaker & Bulkhead<br/>(100 In-Flight Cap / Health Probe)"}
+        Proxy["9. Reverse Proxy Forwarder<br/>(TCP Socket Pooling keepAlive: true)"]
     end
 
-    %% Async Audit Subgraph
-    subgraph AuditPlane ["⚙️ Async Audit Pipeline"]
-        direction TB
-        Queue["In-Memory<br/>Buffer"]
-        RabbitMQ[["RabbitMQ<br/>Broker"]]
-        Worker["async-audit-worker<br/>(PII Redaction & Batch Insert)"]
+    %% State & Storage
+    subgraph StorageLayer ["💾 State & Message Infrastructure"]
+        RedisState[("Redis (State)<br/>Jail / Rate Limits / Config")]
+        RedisCache[("Redis (Cache)<br/>Response Caching")]
+        Queue[["RabbitMQ Broker<br/>(Durable aegis.audit + DLQ)"]]
     end
 
-    %% Data Store
-    Mongo[("MongoDB Atlas<br/>(Persistent Store)")]
+    %% Async Worker
+    subgraph AuditPlane ["⚙️ Async Telemetry Plane"]
+        Worker["async-audit-worker<br/>(Prefetch 50 / Batch 20 or 500ms)"]
+        Mongo[("MongoDB Atlas<br/>(30-Day TTL Audit Store)")]
+    end
 
-    %% Flow connections
-    Client -->|Port 8080| Ingress
-    DashApp -->|JWT + Project ID| Ingress
+    %% Upstream Target
+    Upstream[("🎯 Upstream Microservice<br/>(Protected Backend)")]
 
-    Ingress --> JWT
-    JWT --> Redis
-    Redis --> AIFire
+    %% Ingress Flow
+    Client -->|Port 8080| PayloadCap
+    PayloadCap --> IPExtract --> IPJail --> AuthCheck --> RateLimit --> Tripwire --> CacheCheck --> Breaker --> Proxy
+    Proxy -->|SSRF-Safe Socket| Upstream
 
-    %% AI Sync loop
-    AIFire <-->|Synchronous<br/>ML Scan| FastAPI
+    %% Rejections & Telemetry Flow
+    PayloadCap -.->|413 Payload Too Large| Client
+    IPJail -.->|403 ip_jailed| Client
+    AuthCheck -.->|401 Unauthorized| Client
+    RateLimit -.->|429 rate_limited| Client
+    Tripwire -.->|403 request_blocked| Client
+    Breaker -.->|503 upstream_unavailable| Client
+    CacheCheck -.->|200 OK (Cache HIT)| Client
 
-    %% Good traffic
-    AIFire -->|Safe ✓| Proxy
+    %% Async Telemetry Path
+    DataPlane -.->|Pre-Queue Redacted Events<br/>Bounded In-Process Buffer (1000 cap)| Queue
+    Queue -.->|AMQP Stream| Worker
+    Worker -->|Bulk insertMany| Mongo
 
-    %% Bad traffic
-    AIFire -.->|Malicious ✗| Queue
-    Queue -.-> RabbitMQ
-    RabbitMQ -.->|AMQP Stream| Worker
-    Worker <-->|Batch 10/30s| GeminiAI
-    Worker -->|Bulk Insert| Mongo
-
-    %% Dashboard telemetry fetch
-    Ingress -.->|GET /telemetry| Mongo
-
-    %% Styling
-    classDef default fill:#1e293b,stroke:#475569,stroke-width:2px,color:#f8fafc;
-    classDef db fill:#064e3b,stroke:#059669,stroke-width:2px;
-    classDef ai fill:#4c1d95,stroke:#7c3aed,stroke-width:2px;
-    classDef broker fill:#7c2d12,stroke:#ea580c,stroke-width:2px;
-
-    class Redis,Mongo db;
-    class FastAPI,GeminiAI ai;
-    class RabbitMQ broker;
+    %% Management Connections
+    Console -->|Admin Endpoints :8080| DataPlane
+    DataPlane <--> RedisState
+    DataPlane <--> RedisCache
 ```
 
 ---
 
-## ⚡ 5-Minute Developer Quickstart (Drop-In Proxy)
+## ⚡ Core Engineering Features (PRD v2.1 Hardened)
 
-AegisGate acts as a transparent reverse proxy for your existing backend APIs. You simply drop the security shield in front of your microservice container, seal off direct internet access to your backend API, and point your frontend to the proxy port. No code changes are required in your backend services.
+### 1. Ingress Safeguards & Anti-Spoofing Client IP Derivation
+* **100KB Ingress Cap**: Rejects requests with Content-Length > 100KB with 413 `payload_too_large` before buffering bodies. Chunked transfer streams are aborted via a byte-counting transform stream.
+* **Anti-Spoofing IP Resolution**: Uses socket IP (`req.socket.remoteAddress`) by default. Parses `X-Forwarded-For` right-to-left only when the peer belongs to configured `TRUSTED_PROXY_CIDRS`.
+* **IPv6 /64 Prefix Masking**: Truncates native IPv6 addresses to their /64 subnet prefix, preventing attackers from rotating IPv6 host addresses to evade bans.
 
-### Step 1: The Docker Compose Configuration
+### 2. Proactive Redis IP-Jail (Abuse Scoring)
+* **Abuse Scoring Tripwire**: Replaces fragile single-hit bans with a 60-second fixed-window abuse score (`abuse:<ip>`).
+* **Ban Semantics**: Exceeding 3 abuse points (from repeated rate-limit violations or tripwire hits) sets `jail:<ip>` for 10 minutes (403 `ip_jailed`), dropping abusive clients at the ingress boundary in sub-millisecond time.
+* **Operator Unban**: Full unban and manual release controls via React Admin Console (`POST /api/v1/admin/unban`).
 
-Create a `docker-compose.yml` file to run your backend inside a secure mesh network behind the AegisGate proxy. This allows AegisGate to intercept and analyze all traffic, while completely hiding your backend API from public ingress ports.
+### 3. Connect-Time SSRF Defense & DNS Pinning
+* **Registration & Connect-Time Verification**: Blocks private RFC 1918 subnets (`10.0.0.0/8`, `172.16.0.0/12`, `192.168.0.0/16`), loopback (`127.0.0.0/8`), link-local/cloud metadata (`169.254.169.254`), and dangerous ports (22, 25, 5432, 6379, 27017).
+* **DNS Pinning**: Uses a custom DNS resolver on HTTP/HTTPS agents that resolves the destination hostname once and pins the validated IP directly to the socket, neutralizing DNS-rebinding (TOCTOU) exploits.
+
+### 4. Per-Upstream Circuit Breaker & Bulkhead
+* **Fault Isolation**: State machine (`CLOSED`, `OPEN`, `HALF_OPEN`) isolated per upstream target origin.
+* **Bulkhead Concurrency Cap**: Rejects excess requests beyond `MAX_INFLIGHT_PER_UPSTREAM` (default: 100) with 503 `upstream_saturated` to prevent socket exhaustion during slow backend periods.
+* **Fail-Fast & Synthetic Probe**: Trips to `OPEN` after 5 consecutive upstream failures (5xx or timeouts > 5,000ms), immediately responding with 503 `upstream_unavailable`. Uses a single synthetic `GET /` probe during `HALF_OPEN` before restoring live traffic.
+
+### 5. Safe Response Caching (Anti-Leakage & Stampede Protection)
+* **Strict Bypass Rules**: Bypasses cache if `Authorization` or `Cookie` headers are present, or if the upstream returns `Set-Cookie`, `no-store`, or `private`.
+* **Canonical Key Formatting**: `cache:{projectId}:{routeId}:GET:{path}?{sortedQuery}` sorts allowed query parameters alphabetically and bypasses unlisted parameters to prevent cache-busting attacks.
+* **Single-Flight Coalescing**: Consolidates concurrent cache misses for the same key into a single upstream request, preventing cache stampedes.
+
+### 6. Pre-Queue Telemetry Redaction & Bounded Buffering
+* **Edge PII Redaction**: Sensitive headers (`Authorization`, `Cookie`, `x-aegis-api-key`) and payload fields (`password`, `credit_card`, `ssn`, `email`) are scrubbed before messages reach RabbitMQ.
+* **Bounded In-Process Buffer**: Buffers up to 1,000 events in memory during broker disconnects, applying a drop-oldest policy (`telemetry_dropped_total`) to prevent Node.js heap exhaustion.
+* **Bulk Worker Ingestion**: Worker consumes via `prefetch(50)` and flushes to MongoDB Atlas in batches of 20 items or every 500ms using `insertMany({ ordered: false })`.
+
+---
+
+## ⚡ 5-Minute Developer Quickstart
+
+AegisGate acts as a drop-in reverse proxy in front of your backend services:
+
+### Step 1: Docker Compose Mesh
 
 ```yaml
 version: '3.8'
 
 services:
-  # Your existing API backend, completely isolated from public ingress
+  # Your existing backend (isolated from public internet)
   my-backend-api:
-    image: your-developer-username/my-backend-api:latest
-    container_name: my_backend_api
+    image: my-sample-api:latest
     expose:
       - "5000"
     networks:
-      - secure_mesh
+      - aegis_mesh
 
-  # AegisGate Edge Proxy shielding your backend
+  # AegisGate Edge Proxy
   aegis-gateway:
     image: rohitsirvi/aegisgate-core:latest
-    container_name: aegis_gateway
     ports:
-      - "8080:8080" # Exposed publicly to accept secure frontend queries
+      - "8080:8080" # Exposed publicly to clients
     environment:
       - PORT=8080
       - UPSTREAM_TARGET_URL=http://my-backend-api:5000
       - REDIS_URL=redis://aegis-cache:6379
       - RABBITMQ_URL=amqp://aegis-queue:5672
+      - MONGO_URI=mongodb+srv://<USER>:<PASS>@cluster.mongodb.net/AegisGate
+      - JWT_SECRET=your_jwt_signing_key_here
+      - ALLOW_PRIVATE_UPSTREAMS=true
     depends_on:
       - aegis-cache
       - aegis-queue
     networks:
-      - secure_mesh
+      - aegis_mesh
 
-  # Redis Distributed Cache for Rate Limiting
+  # Redis Distributed State & Cache
   aegis-cache:
     image: redis:7-alpine
-    container_name: aegis_cache
     networks:
-      - secure_mesh
+      - aegis_mesh
 
-  # RabbitMQ Broker for Asynchronous Threat Logging
+  # RabbitMQ Broker for Asynchronous Telemetry
   aegis-queue:
     image: rabbitmq:3-management-alpine
-    container_name: aegis_queue
     networks:
-      - secure_mesh
+      - aegis_mesh
 
 networks:
-  secure_mesh:
+  aegis_mesh:
     driver: bridge
 ```
 
-> ⚠️ **Important Configuration Rule for `UPSTREAM_TARGET_URL`**:
-> Specify **only** the target base origin (e.g., `http://my-backend-api:5000` or `https://api.yourdomain.com`). **Do not** include specific path endpoints like `/api/v1/health`. AegisGate automatically appends incoming client request paths when proxying downstream traffic.
-
-### Step 2: Boot the Shield
-
-Spin up the entire shielded infrastructure with a single orchestration command:
+### Step 2: Boot Infrastructure
 
 ```bash
-docker compose up -d
+docker compose up -d --build
 ```
 
-### Step 3: Route Your Traffic
+### Step 3: Route Client Traffic
 
-Generate a cryptographically secure tenant API access key from the AegisGate Cloud Console. Point your frontend fetch requests to the proxy host (`http://localhost:8080`), injecting the custom `x-aegis-api-key` header to secure your traffic automatically:
+Point your frontend requests to the proxy host (`http://localhost:8080`), injecting your project API key:
 
 ```javascript
-// Example: Shielded request routed through AegisGate Ingress Proxy
-fetch('http://localhost:8080/api/v1/users', {
+fetch('http://localhost:8080/api/v1/orders', {
   method: 'POST',
   headers: {
     'Content-Type': 'application/json',
-    'x-aegis-api-key': 'ag_live_your_secure_developer_key_here'
+    'x-aegis-api-key': 'ag_live_0b4bc02d0c468ad66b49ba4637883edd7c336628d43f3afe'
   },
-  body: JSON.stringify({
-    username: 'aegis_developer',
-    email: 'developer@aegisgate.io'
-  })
+  body: JSON.stringify({ item: 'Widget', qty: 2 })
 })
-.then(response => {
-  if (response.status === 403) {
-    console.error('🛡️ AegisGate Shield: Blocked request due to structural payload anomalies!');
-  }
-  return response.json();
-})
-.then(data => console.log('Parsed API response:', data))
-.catch(error => console.error('Connection failure:', error));
+.then(res => res.json())
+.then(data => console.log('Proxied Response:', data))
+.catch(err => console.error('Connection error:', err));
 ```
 
 ---
 
-## 📦 Microservices Directory Breakdown
-
-AegisGate is structured as an isolated, modern multi-workspace repository dividing proxy mechanisms (Data Plane), backend engines, and auditing daemons (Control Plane):
+## 📦 Directory Structure
 
 ```text
 aegis-gate/
 ├── services/
-│   ├── gateway-core/           # Node.js/TypeScript Ingress Gateway & Edge Ingress Proxy (Port 8080)
-│   ├── async-audit-worker/     # Node.js/TypeScript Event Consumer & Bulk Mongoose Persister
-│   └── admin-dashboard/        # Vite React/TypeScript Cybersecurity Control Terminal Workspace
+│   ├── gateway-core/           # Node.js/TS Edge Ingress Proxy & Middlewares (Port 8080)
+│   ├── async-audit-worker/     # Node.js/TS RabbitMQ Batch Consumer & MongoDB Persister
+│   └── admin-dashboard/        # React/Vite/Tailwind Control Console (Circuit & Jail Manager)
 ├── scripts/
-│   └── vps-setup.sh            # Automated Cloud VPS Provisioning and Firewall Script
+│   └── vps-setup.sh            # Automated Cloud VPS Provisioning Script
 ├── docker-compose.yml          # Local Dev Environment Orchestration
-├── docker-compose.prod.yml     # Production Orchestration Mesh configuration
+├── docker-compose.prod.yml     # Production Mesh Configuration
+├── PRD.md                      # Hardened System Design Specification (PRD v2.1)
 └── README.md                   # System Operations Manual
 ```
 
-### 1. `gateway-core` Ingress Gateway
-* **Stateless Auth Routing (`src/routes/auth.ts`)**: Registers and authenticates developers (`POST /api/v1/auth/register`, `POST /api/v1/auth/login`) securely hashing passwords with `bcryptjs` (salt rounds 10) and issuing stateless `jsonwebtoken` (JWT) authorization structures.
-* **Environment Provisioner (`src/routes/projects.ts`)**: Generates cryptographically secure API keys prefixed with `ag_live_` (`POST /api/v1/projects`), automatically linking project configurations to authenticated developer accounts and invalidating cached Redis keys on updates.
-* **Redis Hot-Path Target Resolver (`src/index.ts`)**: Caches API key validations and project metadata (`targetUrl`, webhooks) in Redis (`aegis-cache`) with a 300s TTL, eliminating direct MongoDB reads from middleware hot paths.
-* **Atomic O(1) Rate Limiter (`src/middleware/rateLimiter.ts` & `src/config/redis.ts`)**: Utilizes an atomic Redis `rateLimitIncr` Lua script (`INCR` + `EXPIRE`) to enforce per-IP rate bounds in O(1) time without DB access or concurrency ZSET collisions.
-* **HTTP Connection Pooling Agent (`src/index.ts`)**: Configures `http.Agent` and `https.Agent` (`keepAlive: true`, `maxSockets: 100`) in `http-proxy-middleware` to reuse TCP sockets and minimize latency when proxying downstream.
-* **Non-Blocking Telemetry & Edge Security Filter (`src/middleware/securityFilter.ts`)**: Synchronously inspects payload limits (100KB body cap) and scans for SQLi / XSS attack signatures (`' OR '1'='1'`, `<script>`, `UNION SELECT`, `--`, `/* */`), dropping attacks with HTTP 403 Forbidden and asynchronously (`setImmediate`) dispatching threat telemetry via RabbitMQ without blocking HTTP response cycles.
-* **Self-Healing Message Broker (`src/config/queue.ts`)**: Implements an async RabbitMQ connection loop with a recursive 5-second retry backoff and Dead-Letter Exchange (DLX). Automatically buffers pending telemetry into memory if RabbitMQ is temporarily offline.
+---
 
-### 2. `async-audit-worker` Control Plane Auditing Daemon
-* **Channel Prefetch & DLQ Handling**: Configures `channel.prefetch(20)` to manage broker load. Messages failing processing after 3 retries are routed via `aegis_dlx` to `aegis_dead_letter` for manual inspection.
-* **Local PII Redaction**: Scrubs sensitive key fields (`password`, `credit_card`, `ssn`, `email`) in raw JSON bodies prior to MongoDB insertion.
-* **Batch Telemetry Ingestion**: Consumes messages from RabbitMQ, scrubs sensitive PII, and performs bulk writes into MongoDB Atlas for telemetry logs.
-* **Real-Time Webhook Dispatcher**: Fires asynchronous HTTP webhooks to configured Slack and Discord endpoints upon detecting critical threats.
+## 🛡️ Standard Error Contract
 
-### 3. `admin-dashboard` React Cybersecurity Workspace
-* **Analytics Console**: Displays real-time blocked event counts, live threat telemetry stream, and interactive raw payload inspector.
-* **Tenant Provisioning**: Provisions new projects, generates `ag_live_` API access keys, and configures upstream routing.
-* **Project Settings**: Configures upstream targets and updates Slack/Discord alert webhooks.
-* **DLQ Monitor**: Displays health state of `aegis_dead_letter`, allowing administrators to inspect, retry, or purge poison queue payloads.
+All gateway-generated rejections return uniform JSON and set the `X-Request-Id` response header:
+
+| Status Code | Error Code (`error`) | Trigger Condition |
+| :--- | :--- | :--- |
+| **401 Unauthorized** | `invalid_or_missing_credentials` | Missing or invalid `x-aegis-api-key` / JWT |
+| **403 Forbidden** | `ip_jailed` | Client IP is currently in 10-minute Redis ban |
+| **403 Forbidden** | `request_blocked` | Coarse SQLi / XSS pattern detected by tripwire |
+| **413 Payload Too Large** | `payload_too_large` | Body size exceeds 100KB cap |
+| **429 Too Many Requests** | `rate_limited` | Rate limit window exceeded (includes `Retry-After`) |
+| **503 Service Unavailable** | `upstream_unavailable` | Target circuit breaker is in `OPEN` state |
+| **503 Service Unavailable** | `upstream_saturated` | Upstream concurrent in-flight cap (100) reached |
+| **503 Service Unavailable** | `auth_backend_unavailable` | Project credentials could not be loaded |
+| **504 Gateway Timeout** | `upstream_timeout` | Upstream failed to respond within 5,000ms |
 
 ---
 
-## ⚙️ Configuration & Environment Parameters
+## 🧪 Automated Test Suite & Verification
 
-Create a `.env` file in the root context of the project before booting the containers.
-
-```ini
-# --- Persistence and Broker Credentials ---
-MONGO_URI=mongodb+srv://<USER>:<PASSWORD>@aegis-cluster.mongodb.net/AegisGate?retryWrites=true&w=majority
-RABBITMQ_URL=amqp://aegis-queue:5672
-REDIS_URL=redis://aegis_cache:6379
-
-# --- Secret Auth Key bounds ---
-JWT_SECRET=your_jwt_signing_key_here
-
-# --- Network Port Mappings ---
-PORT=8080
-VITE_API_BASE_URL=http://localhost:8080
-```
-
----
-
-## 🐳 Docker Orchestration & Production Mesh
-
-AegisGate leverages Docker's built-in DNS and streamlined bridge routing networks to segregate inter-service traffic. Under `docker-compose.prod.yml`, all services communicate internally over a private network mesh `aegis_mesh`:
-
-* `gateway-core` connects securely to `aegis_cache` (Redis) on port `6379`.
-* `gateway-core` and `async-audit-worker` communicate with `aegis_queue` (RabbitMQ) on port `5672`.
-
-### Production Dockerfiles Configuration:
-- **`services/gateway-core/Dockerfile`**: Optimized multi-stage Node distribution compilation. Stage 1 compiles TS into ESNext JS binaries, and Stage 2 runs minimal production environments (`npm ci --only=production`), copying compiled `./dist` paths.
-- **`services/async-audit-worker/Dockerfile`**: High-performance multi-stage daemon distribution skipping developer packages.
-
----
-
-## 📊 Verified Performance & Latency Benchmarks
-
-Benchmarked across 110 concurrent requests via Postman Collection Runner using Redis hot-path caching and internal container routing:
-
-| Metric | Measured Baseline | Target Threshold | Status |
-| :--- | :--- | :--- | :--- |
-| **Gateway Ingress Overhead** | **~3 ms – 15 ms** | $< 50\text{ ms}$ | ✅ PASSED |
-| **Edge Block Latency (403 / 429)** | **1 ms – 3 ms** | $< 10\text{ ms}$ | ✅ PASSED |
-| **Total Local Proxied Response Time** | **25 ms** | $< 100\text{ ms}$ | ✅ PASSED |
-
----
-
-## 🚀 Automated Cloud VPS Deployment (Ubuntu Staging Blueprint)
-
-We supply a production server provisioning automation script at `scripts/vps-setup.sh`.
-
-### Firewall Ports Mapping Matrix
-
-To ensure absolute network security in production clouds (AWS, GCP, DigitalOcean), enforce the following firewall parameters:
-
-| Port / Protocol | Target Service Component | Mesh Access Boundary | Public Internet Access Status |
-| :--- | :--- | :--- | :--- |
-| **8080 (TCP)** | Public Edge Ingress Proxy (`gateway-core`) | Ingress Gateway Ingress | **OPEN** (For dashboard and clients) |
-| **5672 (TCP)** | RabbitMQ Message Broker (`aegis_queue`) | Private `aegis_mesh` | **CLOSED** (Internal only) |
-| **6379 (TCP)** | Redis Rate Limit Cache (`aegis_cache`) | Private `aegis_mesh` | **CLOSED** (Internal only) |
-| **22 (TCP)** | System SSH Port | Host Interface | **OPEN** (Restricted to Developer IP) |
-
-### 🛠️ Deploying to VPS in 3 Steps:
-
-1. **Provision Infrastructure**: Run our setup script to install Docker, Docker Compose, standalone binaries, and apply strict UFW firewall protocols automatically:
-   ```bash
-   chmod +x scripts/vps-setup.sh
-   sudo ./scripts/vps-setup.sh
-   ```
-2. **Clone & Configure Env**:
-   ```bash
-   git clone https://github.com/RohitSirvi898/AegisGate.git aegis-gate
-   cd aegis-gate
-   nano .env # Populate MONGO_URI, JWT_SECRET, and base URLs
-   ```
-3. **Boot Production Mesh**: Detach microservice containers in daemon mode:
-   ```bash
-   docker-compose -f docker-compose.prod.yml up -d --build
-   ```
-
----
-
-## 🧪 Safe-Fail Verification Metrics
-
-Confirm operational sanity by validating compilation parameters across workspaces:
+Validate all architectural requirements and failure behaviors locally:
 
 ```bash
-# gateway-core TypeScript Check
+# gateway-core: Test SSRF, Circuit Breaker, IP Jail, and Caching
+cd services/gateway-core && npx tsx src/__tests__/hardening.test.ts
+
+# async-audit-worker: Test Batch Ingestion, DLQ, and Outage Backoff
+cd services/async-audit-worker && npx tsx src/__tests__/worker.test.ts
+
+# Production build verification
 cd services/gateway-core && npm run build
-
-# async-audit-worker TypeScript Check
-cd services/async-audit-worker && npx tsc --noEmit
-
-# admin-dashboard React Build Check
+cd services/async-audit-worker && npm run build
 cd services/admin-dashboard && npm run build
 ```
