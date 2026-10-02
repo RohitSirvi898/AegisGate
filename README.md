@@ -9,65 +9,51 @@ Built as an educational and practical system-design implementation, it acts as a
 ## 📐 System Architecture (Data & Telemetry Planes)
 
 ```mermaid
-%%{init: {'flowchart': {'htmlLabels': true, 'curve': 'bump'}, 'theme': 'base', 'themeVariables': { 'primaryColor': '#1e293b', 'primaryTextColor': '#f8fafc', 'primaryBorderColor': '#334155', 'lineColor': '#94a3b8'}}}%%
-graph LR
-    %% Clients
-    Client("🌐 Client API /<br/>HTTP Fetch")
-    Console("💻 admin-dashboard<br/>React Console")
+%%{init: {'flowchart': {'htmlLabels': true, 'curve': 'basis'}, 'theme': 'base', 'themeVariables': { 'primaryColor': '#1e293b', 'primaryTextColor': '#f8fafc', 'primaryBorderColor': '#334155', 'lineColor': '#94a3b8'}}}%%
+flowchart LR
+    %% Clients (Far Left)
+    Client["🌐 Client API / Mobile App"]
+    Admin["💻 React Admin Console"]
 
-    %% Core Data Plane
-    subgraph DataPlane ["🔐 Edge Ingress Pipeline (gateway-core :8080)"]
-        direction TB
-        PayloadCap["1. Ingress 100KB Cap<br/>(Header & Stream Byte Counter)"]
-        IPExtract["2. Client IP Derivation<br/>(Socket IP / Trusted CIDRs / IPv6 /64)"]
-        IPJail{"3. Redis IP Jail Check<br/>(10-Min Ban / Abuse Scoring)"}
-        AuthCheck{"4. Auth & Scope Gate<br/>(Stateless JWT / Hashed ag_live_ Keys)"}
-        RateLimit{"5. Atomic Redis Rate Limiter<br/>(O(1) Lua Script)"}
-        Tripwire{"6. Security Tripwire<br/>(SQLi / XSS RE2 Pattern Match)"}
-        CacheCheck{"7. Response Cache<br/>(Single-Flight / Whitelisted GET)"}
-        Breaker{"8. Circuit Breaker & Bulkhead<br/>(100 In-Flight Cap / Health Probe)"}
-        Proxy["9. Reverse Proxy Forwarder<br/>(TCP Socket Pooling keepAlive: true)"]
+    %% Core Gateway Data Plane (Center Horizontal Track)
+    subgraph DataPlane ["🔐 AegisGate Core (:8080 Data Plane)"]
+        direction LR
+        P1["1. Ingress & IP-Jail<br/>• 100KB Cap<br/>• /64 IPv6 Truncation<br/>• 10-Min Redis Ban"]
+        P2["2. Auth & Rate Limiter<br/>• Stateless JWT / API Key<br/>• Atomic O(1) Lua Script"]
+        P3["3. Tripwire & Cache<br/>• RE2 SQLi/XSS Scan<br/>• Whitelisted GET Cache"]
+        P4["4. Resilience & Proxy<br/>• Per-Upstream Breaker<br/>• Bulkhead Cap (100)<br/>• Socket Pooling"]
+
+        P1 --> P2 --> P3 --> P4
     end
 
-    %% State & Storage
-    subgraph StorageLayer ["💾 State & Message Infrastructure"]
-        RedisState[("Redis (State)<br/>Jail / Rate Limits / Config")]
-        RedisCache[("Redis (Cache)<br/>Response Caching")]
-        Queue[["RabbitMQ Broker<br/>(Durable aegis.audit + DLQ)"]]
-    end
-
-    %% Async Worker
-    subgraph AuditPlane ["⚙️ Async Telemetry Plane"]
-        Worker["async-audit-worker<br/>(Prefetch 50 / Batch 20 or 500ms)"]
-        Mongo[("MongoDB Atlas<br/>(30-Day TTL Audit Store)")]
-    end
-
-    %% Upstream Target
+    %% Protected Upstream (Far Right)
     Upstream[("🎯 Upstream Microservice<br/>(Protected Backend)")]
 
-    %% Ingress Flow
-    Client -->|Port 8080| PayloadCap
-    PayloadCap --> IPExtract --> IPJail --> AuthCheck --> RateLimit --> Tripwire --> CacheCheck --> Breaker --> Proxy
-    Proxy -->|SSRF-Safe Socket| Upstream
+    %% Distributed State (Bottom Left)
+    Redis[("💾 Redis 7<br/>• IP Jail State<br/>• Rate Limit Counters<br/>• Response Cache")]
 
-    %% Rejections & Telemetry Flow
-    PayloadCap -.->|413 Payload Too Large| Client
-    IPJail -.->|403 ip_jailed| Client
-    AuthCheck -.->|401 Unauthorized| Client
-    RateLimit -.->|429 rate_limited| Client
-    Tripwire -.->|403 request_blocked| Client
-    Breaker -.->|503 upstream_unavailable| Client
-    CacheCheck -.->|200 OK (Cache HIT)| Client
+    %% Telemetry Plane (Bottom Right - Flows Left to Right)
+    subgraph TelemetryPlane ["⚙️ Async Telemetry Pipeline"]
+        direction LR
+        Queue[["RabbitMQ Broker<br/>(aegis.audit + DLQ)"]]
+        Worker["async-audit-worker<br/>(Prefetch 50 / Batch 20)"]
+        Mongo[("MongoDB Atlas<br/>(30-Day TTL Store)")]
 
-    %% Async Telemetry Path
-    DataPlane -.->|Pre-Queue Redacted Events<br/>Bounded In-Process Buffer (1000 cap)| Queue
-    Queue -.->|AMQP Stream| Worker
-    Worker -->|Bulk insertMany| Mongo
+        Queue --> Worker --> Mongo
+    end
 
-    %% Management Connections
-    Console -->|Admin Endpoints :8080| DataPlane
-    DataPlane <--> RedisState
-    DataPlane <--> RedisCache
+    %% Ingress Traffic
+    Client -->|"HTTP Ingress"| P1
+    Admin -.->|"Admin Ops / Unban"| P1
+
+    %% State Lookups
+    P2 <-->|"Jail & Counter State"| Redis
+
+    %% Forwarding to Upstream
+    P4 -->|"SSRF-Safe Proxy"| Upstream
+
+    %% Async Telemetry Stream
+    P3 -.->|"Pre-Queue Redacted"| Queue
 ```
 
 ---
