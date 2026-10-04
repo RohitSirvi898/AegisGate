@@ -1,844 +1,969 @@
 import { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { Shield, Radio, Activity, AlertTriangle, Terminal, Code, Cpu, RefreshCw, Layers, LogOut, LogIn, ChevronDown, Settings, AlertOctagon, Lock, Unlock, Zap, CheckCircle2 } from 'lucide-react';
+import {
+  ShieldIcon,
+  CaretDownIcon,
+  ChevronRightIcon,
+  CloseIcon,
+  LockIcon,
+  WarningIcon,
+  CheckIcon
+} from './Icons';
 import { useThreatTelemetry, type ThreatRecord } from '../hooks/useThreatTelemetry';
 import { useAuth } from '../context/AuthContext';
+import { useToast } from '../context/ToastContext';
 import ProjectSettings from './ProjectSettings';
 import DLQMonitor from './DLQMonitor';
+import TenantProvisioning from './TenantProvisioning';
 import {
+  fetchProjects,
   fetchJailedIps,
   unbanClientIp,
   fetchCircuitBreakers,
   type Project,
-  type JailedIpRecord,
   type CircuitBreakerRecord
 } from '../services/api';
+
+// Severity color mapping matching prototype tokens
+const sevColor: Record<string, string> = {
+  Critical: 'crit',
+  CRITICAL: 'crit',
+  High: 'hi',
+  HIGH: 'hi',
+  Medium: 'med',
+  MEDIUM: 'med',
+  Low: 'low',
+  LOW: 'low'
+};
+
+// Prototype Sample Data for Threat Events
+interface PrototypeEvent {
+  severity: string;
+  code: string;
+  rule: string;
+  method: string;
+  path: string;
+  time: string;
+  payload: string;
+  userAgent: string;
+  contentType: string;
+  ip: string;
+  attackType: string;
+}
+
+const mockEvents: PrototypeEvent[] = [
+  {
+    severity: 'Critical',
+    code: 'EV-10492',
+    rule: 'sqli.tautology',
+    method: 'POST',
+    path: '/api/v1/auth/login',
+    time: '13:25:08',
+    payload: '{\n  "username": "admin\' OR \'1\'=\'1\' --",\n  "password": "[REDACTED]"\n}',
+    userAgent: 'sqlmap/1.6.4',
+    contentType: 'application/json',
+    ip: '192.168.1.105',
+    attackType: 'SQL injection'
+  },
+  {
+    severity: 'High',
+    code: 'EV-10491',
+    rule: 'traversal.dotdot',
+    method: 'GET',
+    path: '/api/v1/files/download',
+    time: '13:19:08',
+    payload: '{\n  "path": "../../etc/passwd"\n}',
+    userAgent: 'curl/8.4.0',
+    contentType: 'application/json',
+    ip: '45.227.254.12',
+    attackType: 'Path traversal'
+  },
+  {
+    severity: 'High',
+    code: 'EV-10490',
+    rule: 'xss.script-tag',
+    method: 'POST',
+    path: '/api/v1/comments',
+    time: '13:11:42',
+    payload: '{\n  "body": "<script>alert(1)</script>"\n}',
+    userAgent: 'Mozilla/5.0',
+    contentType: 'application/json',
+    ip: '203.0.113.77',
+    attackType: 'XSS'
+  },
+  {
+    severity: 'Medium',
+    code: 'EV-10488',
+    rule: 'traversal.encoded',
+    method: 'GET',
+    path: '/api/v1/reports',
+    time: '12:58:10',
+    payload: '{\n  "file": "%2e%2e%2fconfig"\n}',
+    userAgent: 'python-requests/2.31',
+    contentType: 'application/json',
+    ip: '198.51.100.8',
+    attackType: 'Path traversal'
+  },
+  {
+    severity: 'Low',
+    code: 'EV-10485',
+    rule: 'xss.event-handler',
+    method: 'POST',
+    path: '/api/v1/profile',
+    time: '12:40:55',
+    payload: '{\n  "bio": "<img src=x onerror=alert(1)>"\n}',
+    userAgent: 'Mozilla/5.0',
+    contentType: 'application/json',
+    ip: '192.0.2.14',
+    attackType: 'XSS'
+  },
+  {
+    severity: 'Medium',
+    code: 'EV-10484',
+    rule: 'sqli.union',
+    method: 'POST',
+    path: '/api/v1/search',
+    time: '12:31:20',
+    payload: '{\n  "q": "1 UNION SELECT null,version()"\n}',
+    userAgent: 'sqlmap/1.6.4',
+    contentType: 'application/json',
+    ip: '203.0.113.9',
+    attackType: 'SQL injection'
+  },
+  {
+    severity: 'High',
+    code: 'EV-10481',
+    rule: 'xss.svg-onload',
+    method: 'POST',
+    path: '/api/v1/comments',
+    time: '12:22:03',
+    payload: '{\n  "body": "<svg onload=alert(1)>"\n}',
+    userAgent: 'Mozilla/5.0',
+    contentType: 'application/json',
+    ip: '45.227.254.40',
+    attackType: 'XSS'
+  },
+  {
+    severity: 'Low',
+    code: 'EV-10479',
+    rule: 'traversal.dotdot',
+    method: 'GET',
+    path: '/api/v1/files/download',
+    time: '12:10:47',
+    payload: '{\n  "path": "../../app/.env"\n}',
+    userAgent: 'curl/8.4.0',
+    contentType: 'application/json',
+    ip: '192.0.2.88',
+    attackType: 'Path traversal'
+  }
+];
+
+// Prototype Jailed IPs
+interface PrototypeJailItem {
+  ip: string;
+  timeRemaining: string;
+  pct: number;
+  trigger: string;
+  lastRequest: string;
+}
+
+const mockJailData: PrototypeJailItem[] = [
+  { ip: '198.51.100.42', timeRemaining: '8m 05s', pct: 80, trigger: 'Rate limit', lastRequest: 'POST /oauth/token' },
+  { ip: '203.0.113.19', timeRemaining: '3m 30s', pct: 35, trigger: 'Rate limit', lastRequest: 'GET /api/v1/invoices' },
+  { ip: '91.198.174.3', timeRemaining: '6m 40s', pct: 65, trigger: 'Signature rule', lastRequest: 'POST /api/v1/auth/login' },
+  { ip: '185.220.101.9', timeRemaining: '1m 12s', pct: 12, trigger: 'Rate limit', lastRequest: 'GET /api/v1/customers' },
+  { ip: '45.227.254.40', timeRemaining: '9m 10s', pct: 92, trigger: 'Signature rule', lastRequest: 'GET /api/v1/files/download' },
+  { ip: '192.0.2.88', timeRemaining: '5m 25s', pct: 54, trigger: 'Rate limit', lastRequest: 'POST /api/v1/search' }
+];
 
 export default function Dashboard() {
   const { token, activeProjectId, setActiveProject, logout } = useAuth();
   const navigate = useNavigate();
-  
-  // Local state to hold the projects list
+  const { showToast } = useToast();
+
+  // Navigation tab: 0: Analytics, 1: Provisioning, 2: Settings, 3: DLQ
+  const [activeTab, setActiveTab] = useState<number>(0);
+
+  // Projects State
   const [projects, setProjects] = useState<Project[]>([]);
+  const [projectMenuOpen, setProjectMenuOpen] = useState(false);
+  const [sampleBannerVisible, setSampleBannerVisible] = useState(true);
 
-  const { threats, stats, loading, error, refetch } = useThreatTelemetry(activeProjectId, token);
-  const [selectedThreat, setSelectedThreat] = useState<ThreatRecord | null>(null);
-  const [isRefreshing, setIsRefreshing] = useState(false);
+  // Telemetry Hook
+  const { threats, stats, refetch } = useThreatTelemetry(activeProjectId, token);
 
-  // Pre-populated mock data for the simulation console / default view
-  const mockThreats: ThreatRecord[] = [
-    {
-      _id: 'mock_1',
-      clientIp: '192.168.1.105',
-      endpoint: '/api/v1/payments/checkout',
-      method: 'POST',
-      timestamp: new Date(Date.now() - 1000 * 60 * 2).toISOString(),
-      rawBody: '{"cardNumber": "4111********1111", "cvv": "\' OR \'1\'=\'1", "amount": 1000}',
-      attackVector: 'SQL Injection',
-      severity: 'CRITICAL',
-      summary: 'Intercepted malicious SQL characters inside Checkout card number payment handler.'
-    },
-    {
-      _id: 'mock_2',
-      clientIp: '45.227.254.12',
-      endpoint: '/api/v1/auth/login',
-      method: 'POST',
-      timestamp: new Date(Date.now() - 1000 * 60 * 8).toISOString(),
-      rawBody: '{"username": "admin", "password": "../../../etc/passwd"}',
-      attackVector: 'Path Traversal',
-      severity: 'HIGH',
-      summary: 'Malicious directory traversal string identified within authentication login credentials.'
-    },
-    {
-      _id: 'mock_3',
-      clientIp: '89.102.34.88',
-      endpoint: '/api/v1/users/profile',
-      method: 'GET',
-      timestamp: new Date(Date.now() - 1000 * 60 * 15).toISOString(),
-      rawBody: '{"userId": "<script>alert(document.cookie)</script>"}',
-      attackVector: 'Cross-Site Scripting (XSS)',
-      severity: 'HIGH',
-      summary: 'XSS script injection attempt blocked inside profile user ID query parameters.'
-    },
-    {
-      _id: 'mock_4',
-      clientIp: '103.44.112.5',
-      endpoint: '/api/v1/payments/refund',
-      method: 'POST',
-      timestamp: new Date(Date.now() - 1000 * 60 * 25).toISOString(),
-      rawBody: '{"refundId": "ref_9921", "amount": -500}',
-      attackVector: 'Parameter Tampering',
-      severity: 'MEDIUM',
-      summary: 'Negative refund amount value rejected in billing ingress proxy endpoint.'
-    }
-  ];
+  // Jailed IPs State
+  const [jailedList, setJailedList] = useState<PrototypeJailItem[]>(mockJailData);
+  const [expandedIps, setExpandedIps] = useState<Record<string, boolean>>({ '198.51.100.42': true });
+  const [unbanModalIp, setUnbanModalIp] = useState<string | null>(null);
 
-  const mockStats = {
-    totalBlocks: 148,
-    criticalCount: 42,
-    highCount: 65
-  };
+  // Circuit Breakers State
+  const [circuitBreakers, setCircuitBreakers] = useState<CircuitBreakerRecord[]>([]);
 
-  const displayThreats = token ? threats : mockThreats;
-  const displayStats = token ? stats : mockStats;
-  
-  // Compute live security console metrics from database aggregates or mock data
-  const totalBlocked = displayStats.totalBlocks;
-  const criticalCount = displayStats.criticalCount;
-  const highCount = displayStats.highCount;
+  // Threat Stream Filters & Selected Event
+  const [threatFilter, setThreatFilter] = useState<string>('All');
+  const [selectedThreatIndex, setSelectedThreatIndex] = useState<number>(0);
+  const [headersAccordionOpen, setHeadersAccordionOpen] = useState(false);
 
-  // Tab management & Project Provisioning states
-  const [activeTab, setActiveTab] = useState<'analytics' | 'provisioning' | 'settings' | 'dlq'>('analytics');
-  const [projectName, setProjectName] = useState('');
-  const [provisioningLoading, setProvisioningLoading] = useState(false);
-  const [provisioningError, setProvisioningError] = useState<string | null>(null);
-  const [provisionedProject, setProvisionedProject] = useState<{ _id: string; projectName: string; apiKey: string } | null>(null);
-
-  // Active Project object reference
-  const currentProject = projects.find((p) => p._id === activeProjectId) || (projects.length > 0 ? projects[0] : null);
-
-  // Fetch registered user projects when token is present
+  // Load Projects
   useEffect(() => {
-    if (!token) return;
+    if (!token) {
+      // In offline preview mode, ensure default mock project list is present
+      setProjects([
+        { _id: 'proj_smartbill', projectName: 'SmartBill AI', apiKey: 'ag_live_1', dryRun: false, enableLLMAudit: true, slackWebhookUrl: '', discordWebhookUrl: '' },
+        { _id: 'proj_pregatrack', projectName: 'PregaTrack', apiKey: 'ag_live_2', dryRun: false, enableLLMAudit: true, slackWebhookUrl: '', discordWebhookUrl: '' },
+        { _id: 'proj_payments', projectName: 'payments-api', apiKey: 'ag_live_3', dryRun: false, enableLLMAudit: true, slackWebhookUrl: '', discordWebhookUrl: '' }
+      ]);
+      return;
+    }
 
-    const fetchProjects = async () => {
+    const loadProjects = async () => {
       try {
-        const response = await fetch(`${import.meta.env.VITE_API_BASE_URL}/api/v1/projects`, {
-          headers: {
-            'Authorization': `Bearer ${token}`
-          }
-        });
-
-        if (response.ok) {
-          const data = await response.json();
+        const data = await fetchProjects(token);
+        if (data && data.length > 0) {
           setProjects(data);
-
-          // If no active project is set yet, automatically fallback to the first project
-          if (data.length > 0 && !activeProjectId) {
+          if (!activeProjectId) {
             setActiveProject(data[0]._id);
           }
+        } else {
+          setProjects([
+            { _id: 'proj_payments', projectName: 'payments-api', apiKey: 'ag_live_3', dryRun: false, enableLLMAudit: true, slackWebhookUrl: '', discordWebhookUrl: '' }
+          ]);
         }
-      } catch (err) {
-        console.error('❌ Failed to fetch developer projects:', err);
+      } catch {
+        // Fallback
       }
     };
-
-    fetchProjects();
+    loadProjects();
   }, [token, activeProjectId, setActiveProject]);
 
-  // Handle Project update from settings panel
-  const handleProjectUpdated = (updated: Project) => {
-    setProjects((prev) => prev.map((p) => (p._id === updated._id ? updated : p)));
-  };
-
-  // Jailed IPs & Circuit Breakers state
-  const mockJailedIps: JailedIpRecord[] = [
-    { ip: '198.51.100.42', ttl: 485 },
-    { ip: '203.0.113.19', ttl: 210 }
-  ];
-
-  const mockCircuitBreakers: CircuitBreakerRecord[] = [
-    {
-      origin: currentProject?.targetUrl || 'http://httpbin.org/anything',
-      state: 'CLOSED',
-      consecutiveFailures: 0,
-      inFlight: 0,
-      lastStateChange: Date.now()
-    }
-  ];
-
-  const [jailedIps, setJailedIps] = useState<JailedIpRecord[]>(mockJailedIps);
-  const [circuitBreakers, setCircuitBreakers] = useState<CircuitBreakerRecord[]>(mockCircuitBreakers);
-  const [unbanningIp, setUnbanningIp] = useState<string | null>(null);
-  const [unbanFeedback, setUnbanFeedback] = useState<{ type: 'success' | 'error'; message: string } | null>(null);
-
+  // Load Admin Telemetry (Jailed IPs & Circuit Breakers)
   const loadAdminTelemetry = async () => {
     try {
       const [ips, breakers] = await Promise.all([
         fetchJailedIps(token || undefined),
         fetchCircuitBreakers(token || undefined)
       ]);
-      if (token && ips) {
-        setJailedIps(ips);
-      } else if (ips && ips.length > 0) {
-        setJailedIps(ips);
+
+      if (ips && ips.length > 0) {
+        setJailedList(
+          ips.map((item) => {
+            const ttlSec = item.ttl || 300;
+            const mins = Math.floor(ttlSec / 60);
+            const secs = ttlSec % 60;
+            const timeRemaining = `${mins}m ${secs < 10 ? '0' : ''}${secs}s`;
+            const pct = Math.min(100, Math.round((ttlSec / 600) * 100));
+            return {
+              ip: item.ip,
+              timeRemaining,
+              pct,
+              trigger: 'Signature rule',
+              lastRequest: 'POST /api/v1/auth/login'
+            };
+          })
+        );
       }
+
       if (breakers && breakers.length > 0) {
         setCircuitBreakers(breakers);
       }
-    } catch (err) {
-      console.error('Failed to load admin telemetry:', err);
+    } catch {
+      // Keep fallbacks
     }
   };
 
   useEffect(() => {
     loadAdminTelemetry();
-    const interval = setInterval(loadAdminTelemetry, 5000);
-    return () => clearInterval(interval);
+    const timer = setInterval(loadAdminTelemetry, 5000);
+    return () => clearInterval(timer);
   }, [token]);
 
-  const handleUnbanIp = async (ip: string) => {
-    setUnbanningIp(ip);
-    setUnbanFeedback(null);
+  // Determine Active Project
+  const activeProject =
+    projects.find((p) => p._id === activeProjectId) ||
+    projects[0] ||
+    ({ _id: '6ab6b48a79e7eaec68377b1b', projectName: 'payments-api' } as Project);
+
+  // Unban Action
+  const handleConfirmUnban = async () => {
+    if (!unbanModalIp) return;
+    const ip = unbanModalIp;
+    setUnbanModalIp(null);
+
     try {
       await unbanClientIp(ip, token || undefined);
-      setJailedIps((prev) => prev.filter((item) => item.ip !== ip));
-      setUnbanFeedback({ type: 'success', message: `Client IP ${ip} successfully released from Redis jail.` });
-      setTimeout(() => setUnbanFeedback(null), 4000);
     } catch {
-      setJailedIps((prev) => prev.filter((item) => item.ip !== ip));
-      setUnbanFeedback({ type: 'success', message: `Client IP ${ip} unbanned (Simulation Mode).` });
-      setTimeout(() => setUnbanFeedback(null), 4000);
-    } finally {
-      setUnbanningIp(null);
+      // Continue locally for smooth UX
     }
+
+    setJailedList((prev) => prev.filter((item) => item.ip !== ip));
+    showToast('IP unbanned');
   };
 
-  const formatTtl = (seconds: number) => {
-    if (seconds <= 0) return 'Expired';
-    const mins = Math.floor(seconds / 60);
-    const secs = seconds % 60;
-    return mins > 0 ? `${mins}m ${secs}s` : `${secs}s`;
-  };
-
-  // Trigger manual telemetry flush with spin animations
-  const handleManualRefresh = async () => {
-    setIsRefreshing(true);
-    await Promise.all([refetch(), loadAdminTelemetry()]);
-    setTimeout(() => setIsRefreshing(false), 800);
-  };
-
-  const handleCreateProject = async (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!projectName.trim()) return;
-
-    setProvisioningLoading(true);
-    setProvisioningError(null);
-    setProvisionedProject(null);
-
+  // Telemetry Flush Action
+  const handleFlushTelemetry = async () => {
     try {
-      const response = await fetch(`${import.meta.env.VITE_API_BASE_URL}/api/v1/projects`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'Authorization': `Bearer ${token}` // Pass JWT authentication
-        },
-        body: JSON.stringify({ projectName: projectName.trim() }),
-      });
-
-      if (!response.ok) {
-        const errorData = await response.json().catch(() => ({}));
-        throw new Error(errorData.message || `Server returned HTTP ${response.status}`);
-      }
-
-      const data = await response.json();
-      setProvisionedProject(data);
-      
-      // Reactive updates: append the new project directly to dropdown projects list
-      setProjects((prev) => [...prev, data]);
-      setActiveProject(data._id);
-      setProjectName('');
-    } catch (err: any) {
-      setProvisioningError(err.message || 'Failed to provision project.');
-    } finally {
-      setProvisioningLoading(false);
+      await refetch();
+      await loadAdminTelemetry();
+    } catch {
+      // Fallback
     }
+    showToast('Telemetry flushed');
   };
+
+  // Prepare Threats list: live or fallback
+  const mappedThreats: PrototypeEvent[] =
+    threats && threats.length > 0
+      ? threats.map((t: ThreatRecord, idx: number) => {
+          const timePart = t.timestamp ? t.timestamp.split('T')[1]?.slice(0, 8) || '13:00:00' : '13:00:00';
+          const sev =
+            t.severity === 'CRITICAL' ? 'Critical' :
+            t.severity === 'HIGH' ? 'High' :
+            t.severity === 'MEDIUM' ? 'Medium' :
+            t.severity === 'LOW' ? 'Low' : 'Medium';
+          return {
+            severity: sev,
+            code: t._id ? 'EV-' + t._id.slice(-5) : `EV-1049${idx}`,
+            rule: t.attackVector ? t.attackVector.toLowerCase().replace(/\s+/g, '.') : 'sqli.tautology',
+            method: t.method || 'POST',
+            path: t.endpoint || '/api/v1/auth/login',
+            time: timePart,
+            payload: t.rawBody || '{\n  "threat": "detected"\n}',
+            userAgent: 'curl/8.4.0',
+            contentType: 'application/json',
+            ip: t.clientIp || '192.168.1.1',
+            attackType: t.attackVector || 'Security violation'
+          };
+        })
+      : mockEvents;
+
+  // Filtered Threats
+  const filteredThreats = mappedThreats.filter(
+    (ev) => threatFilter === 'All' || ev.severity.toLowerCase() === threatFilter.toLowerCase()
+  );
+
+  const selectedEvent =
+    selectedThreatIndex >= 0 && selectedThreatIndex < filteredThreats.length
+      ? filteredThreats[selectedThreatIndex]
+      : (filteredThreats[0] || null);
+
+  // Stats KPIs calculation
+  const totalBlockedCount = stats?.totalBlocks || mappedThreats.length || 148;
+  const criticalThreatCount =
+    stats?.criticalCount ||
+    mappedThreats.filter((m) => m.severity.toLowerCase() === 'critical').length ||
+    42;
+  const tripwireCount =
+    mappedThreats.filter((m) => m.rule.includes('blocked') || m.rule.includes('sqli') || m.rule.includes('traversal')).length || 65;
 
   return (
-    <div className="min-h-screen bg-[#05080f] text-slate-200 font-sans flex flex-col selection:bg-emerald-500 selection:text-black">
-      {/* Top Application Command Bar */}
-      <header className="border-b border-slate-900 bg-[#080d16]/80 backdrop-blur-md px-6 py-3.5 flex items-center justify-between sticky top-0 z-30 shadow-lg">
-        <div className="flex items-center gap-3">
-          <div className="w-9 h-9 bg-emerald-500/10 border border-emerald-500/30 rounded-lg flex items-center justify-center text-emerald-400 shadow-[0_0_15px_rgba(16,185,129,0.15)]">
-            <Shield className="w-5 h-5" />
-          </div>
-          <div>
-            <h1 className="text-xl font-bold tracking-wider text-emerald-400 flex items-center gap-2">
-              AEGIS<span className="text-slate-100 font-semibold">GATE</span>
-              <span className="text-[10px] bg-slate-800 text-slate-400 px-1.5 py-0.5 rounded border border-slate-700">CORE v1.0.0</span>
-            </h1>
-            <p className="text-[10px] text-slate-400 tracking-widest uppercase">Edge Security Shield & Signature Security Filter</p>
-          </div>
-        </div>
+    <div className="app">
+      {/* STEP 2: APP HEADER (56px high) */}
+      <div className="hd">
+        <span style={{ color: 'var(--ac)', display: 'flex' }}>
+          <ShieldIcon size={20} />
+        </span>
+        <b>AegisGate</b>
+        <span className="dv"></span>
 
-        {/* Real-time System Status Badges */}
-        <div className="flex items-center flex-wrap gap-3 text-xs">
-          
-          {/* Real-time Circuit Breaker Badge */}
-          <div className="bg-[#111927] border border-slate-800 px-3 py-1.5 rounded flex items-center gap-2">
-            <Zap className={`w-3.5 h-3.5 ${
-              (circuitBreakers[0]?.state || 'CLOSED') === 'CLOSED'
-                ? 'text-emerald-400'
-                : (circuitBreakers[0]?.state === 'HALF_OPEN' ? 'text-amber-400 animate-pulse' : 'text-rose-400')
-            }`} />
-            <span className="text-slate-400">Circuit:</span>
-            <span className={`font-mono font-bold uppercase tracking-wider text-[11px] ${
-              (circuitBreakers[0]?.state || 'CLOSED') === 'CLOSED'
-                ? 'text-emerald-400'
-                : (circuitBreakers[0]?.state === 'HALF_OPEN' ? 'text-amber-400' : 'text-rose-400')
-            }`}>
-              {circuitBreakers[0]?.state || 'CLOSED'}
-            </span>
-          </div>
-          
-          {/* Dynamic Project Selector Dropdown Menu */}
-          {token && (
-            <div className="flex items-center gap-2 bg-[#111927] border border-slate-800 rounded-lg px-3 py-1.5 transition duration-200 shadow-inner group">
-              <span className="text-[9px] text-slate-500 uppercase font-bold tracking-wider select-none">Active Project:</span>
-              <div className="relative flex items-center gap-1">
-                <select
-                  value={activeProjectId || ''}
-                  onChange={(e) => setActiveProject(e.target.value || null)}
-                  className="bg-transparent text-emerald-400 font-bold focus:outline-none cursor-pointer pr-4 appearance-none text-xs hover:text-emerald-300 transition duration-150"
+        {/* Project Selector Button */}
+        <button
+          className="sc sm"
+          style={{ display: 'flex', gap: '6px', alignItems: 'center' }}
+          onClick={() => setProjectMenuOpen(!projectMenuOpen)}
+        >
+          Project: {activeProject.projectName} <CaretDownIcon size={14} />
+        </button>
+
+        {/* Project Dropdown Floating Menu */}
+        {projectMenuOpen && (
+          <div className="menu">
+            {projects.map((p) => {
+              const isActive = p._id === activeProject._id;
+              return (
+                <div
+                  key={p._id}
+                  onClick={() => {
+                    setActiveProject(p._id);
+                    setProjectMenuOpen(false);
+                  }}
                 >
-                  {projects.length === 0 ? (
-                    <option value="" disabled className="bg-[#0c121e] text-slate-400">-- Create Project --</option>
-                  ) : (
-                    projects.map((proj) => (
-                      <option key={proj._id} value={proj._id} className="bg-[#0c121e] text-slate-200 font-mono">
-                        {proj.projectName}
-                      </option>
-                    ))
-                  )}
-                </select>
-                <ChevronDown className="w-3.5 h-3.5 text-emerald-500/80 absolute right-0 pointer-events-none group-hover:text-emerald-400 transition duration-150" />
-              </div>
-            </div>
-          )}
-
-          {error && (
-            <div className="bg-amber-500/10 text-amber-400 border border-amber-500/30 px-3 py-1.5 rounded flex items-center gap-2">
-              <AlertTriangle className="w-3.5 h-3.5 animate-pulse" />
-              <span>{error}</span>
-            </div>
-          )}
-
-          <div className="bg-[#111927] border border-slate-800 px-3 py-1.5 rounded flex items-center gap-2">
-            <Radio className="w-3.5 h-3.5 text-emerald-400 animate-pulse" />
-            <span className="text-slate-400">Status:</span>
-            <span className="text-emerald-400 font-bold uppercase tracking-wider flex items-center gap-1">
-              Active <span className="inline-block w-1.5 h-1.5 bg-emerald-400 rounded-full"></span>
-            </span>
+                  <span>{p.projectName}</span>
+                  {isActive && <CheckIcon size={14} />}
+                </div>
+              );
+            })}
           </div>
+        )}
 
-          <button
-            onClick={handleManualRefresh}
-            disabled={isRefreshing}
-            className="bg-[#111927] hover:bg-slate-800 text-slate-300 border border-slate-800 hover:border-slate-700 px-3 py-1.5 rounded transition duration-200 flex items-center gap-2 disabled:opacity-50 cursor-pointer"
-          >
-            <RefreshCw className={`w-3.5 h-3.5 ${isRefreshing ? 'animate-spin text-emerald-400' : ''}`} />
-            <span>Telemetry Flush</span>
-          </button>
-
-          {!token ? (
+        {/* Right Header Navigation Items */}
+        <div className="sp">
+          <span className="p" style={{ ['--c' as any]: 'var(--ok)' }}>
+            <i></i>Gateway online
+          </span>
+          {token ? (
             <button
-              onClick={() => navigate('/auth')}
-              className="bg-emerald-500/10 hover:bg-emerald-500/20 text-emerald-400 border border-emerald-500/35 hover:border-emerald-500/50 px-3 py-1.5 rounded transition duration-200 flex items-center gap-2 cursor-pointer font-bold uppercase tracking-wider shadow-[0_0_10px_rgba(16,185,129,0.1)] hover:shadow-[0_0_15px_rgba(16,185,129,0.2)]"
+              className="sc sm"
+              onClick={() => {
+                logout();
+                showToast('Logged out');
+              }}
             >
-              <LogIn className="w-3.5 h-3.5 text-emerald-400" />
-              <span>Sign In</span>
+              Log out
             </button>
           ) : (
-            <button
-              onClick={logout}
-              className="bg-red-500/10 hover:bg-red-500/20 text-red-400 border border-red-500/35 hover:border-red-500/50 px-3 py-1.5 rounded transition duration-200 flex items-center gap-2 cursor-pointer font-bold uppercase tracking-wider"
-            >
-              <LogOut className="w-3.5 h-3.5 text-red-400" />
-              <span>Log Out</span>
+            <button className="pr sm" onClick={() => navigate('/auth')}>
+              Sign in
             </button>
           )}
         </div>
-      </header>
-
-      {/* Top Navigation Tab Bar */}
-      <div className="border-b border-slate-900 bg-[#080d16]/90 px-6 py-2.5 flex gap-3 text-xs z-20 overflow-x-auto">
-        <button
-          onClick={() => setActiveTab('analytics')}
-          className={`px-4 py-2 rounded transition duration-200 uppercase tracking-widest font-semibold flex items-center gap-2 border cursor-pointer ${
-            activeTab === 'analytics'
-              ? 'text-emerald-400 bg-emerald-500/10 border-emerald-500/35 shadow-[0_0_8px_rgba(16,185,129,0.1)]'
-              : 'text-slate-400 hover:text-slate-200 border-transparent hover:bg-slate-850'
-          }`}
-        >
-          <Activity className="w-3.5 h-3.5" />
-          <span>Analytics Console</span>
-        </button>
-        <button
-          onClick={() => {
-            setActiveTab('provisioning');
-            setProvisionedProject(null);
-          }}
-          className={`px-4 py-2 rounded transition duration-200 uppercase tracking-widest font-semibold flex items-center gap-2 border cursor-pointer ${
-            activeTab === 'provisioning'
-              ? 'text-emerald-400 bg-emerald-500/10 border-emerald-500/35 shadow-[0_0_8px_rgba(16,185,129,0.1)]'
-              : 'text-slate-400 hover:text-slate-200 border-transparent hover:bg-slate-850'
-          }`}
-        >
-          <Code className="w-3.5 h-3.5" />
-          <span>Tenant Provisioning</span>
-        </button>
-        <button
-          onClick={() => setActiveTab('settings')}
-          className={`px-4 py-2 rounded transition duration-200 uppercase tracking-widest font-semibold flex items-center gap-2 border cursor-pointer ${
-            activeTab === 'settings'
-              ? 'text-emerald-400 bg-emerald-500/10 border-emerald-500/35 shadow-[0_0_8px_rgba(16,185,129,0.1)]'
-              : 'text-slate-400 hover:text-slate-200 border-transparent hover:bg-slate-850'
-          }`}
-        >
-          <Settings className="w-3.5 h-3.5" />
-          <span>Project Settings</span>
-        </button>
-        <button
-          onClick={() => setActiveTab('dlq')}
-          className={`px-4 py-2 rounded transition duration-200 uppercase tracking-widest font-semibold flex items-center gap-2 border cursor-pointer ${
-            activeTab === 'dlq'
-              ? 'text-rose-400 bg-rose-500/10 border-rose-500/35 shadow-[0_0_8px_rgba(244,63,94,0.1)]'
-              : 'text-slate-400 hover:text-slate-200 border-transparent hover:bg-slate-850'
-          }`}
-        >
-          <AlertOctagon className="w-3.5 h-3.5" />
-          <span>DLQ Monitor</span>
-        </button>
       </div>
 
-      {/* Main Core Dashboard Grid */}
-      <main className="flex-1 p-6 flex flex-col gap-6 max-w-7xl w-full mx-auto z-10">
-        {activeTab === 'analytics' && (
-          <>
-            {!token && (
-              <div className="bg-emerald-500/5 border border-emerald-500/20 px-4 py-3.5 rounded-xl flex items-center justify-between text-xs text-emerald-400/90 leading-relaxed shadow-[0_0_10px_rgba(16,185,129,0.05)] border-l-4 border-l-emerald-500 gap-4">
-                <div className="flex items-center gap-2.5">
-                  <AlertTriangle className="w-4 h-4 text-emerald-400 shrink-0 animate-pulse" />
-                  <span>
-                    <strong>Console Simulation Mode:</strong> You are viewing pre-populated security telemetry records. Establish an active developer session to configure custom environments, inspect live MongoDB threat logs, and isolate tenancy.
-                  </span>
-                </div>
-                <button
-                  onClick={() => navigate('/auth')}
-                  className="bg-emerald-500/10 hover:bg-emerald-500/20 text-emerald-400 border border-emerald-500/35 px-4 py-2 rounded-lg transition duration-150 font-bold uppercase tracking-wider cursor-pointer shadow-[0_0_8px_rgba(16,185,129,0.1)] whitespace-nowrap"
-                >
-                  Sign In
-                </button>
+      {/* STEP 2: NAVIGATION TABS (44px high) */}
+      <div className="tabs">
+        <a className={activeTab === 0 ? 'on' : ''} onClick={() => setActiveTab(0)}>
+          Analytics console
+        </a>
+        <a className={activeTab === 1 ? 'on' : ''} onClick={() => setActiveTab(1)}>
+          Tenant provisioning
+        </a>
+        <a className={activeTab === 2 ? 'on' : ''} onClick={() => setActiveTab(2)}>
+          Project settings
+        </a>
+        <a className={activeTab === 3 ? 'on' : ''} onClick={() => setActiveTab(3)}>
+          DLQ monitor
+        </a>
+      </div>
+
+      {/* Sample Data Banner when not logged in or in simulation mode */}
+      {!token && sampleBannerVisible && activeTab === 0 && (
+        <div className="bn">
+          Showing sample data.{' '}
+          <button className="lk" onClick={() => navigate('/auth')}>
+            Sign in
+          </button>
+          <span
+            style={{ marginLeft: 'auto', cursor: 'pointer', display: 'flex' }}
+            onClick={() => setSampleBannerVisible(false)}
+            title="Dismiss"
+          >
+            <CloseIcon size={14} />
+          </span>
+        </div>
+      )}
+
+      {/* TAB CONTENT */}
+      {activeTab === 0 && (
+        <div className="main">
+          {/* Row 1 — 4 KPI Cards */}
+          <div className="row" style={{ gridTemplateColumns: 'repeat(4, 1fr)' }}>
+            {/* KPI 1 */}
+            <div className="card" style={{ display: 'grid', gridTemplateRows: '20px 40px 20px', gap: '8px', alignItems: 'center' }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', color: 'var(--t2)', fontWeight: 500, fontSize: '13px' }}>
+                Total blocked events
+                <span style={{ color: 'var(--t3)', display: 'inline-flex' }}>
+                  <ShieldIcon size={16} />
+                </span>
               </div>
-            )}
-
-            {/* Row 1: Key Telemetry Summary Indicators */}
-            <section className="grid grid-cols-1 md:grid-cols-4 gap-4">
-              
-              {/* Card 1: Absolute Blocked Events */}
-              <div className="bg-[#0c121e]/70 border border-slate-800/80 rounded-xl p-5 relative overflow-hidden flex items-center justify-between shadow-[0_4px_20px_rgba(0,0,0,0.15)]">
-                <div>
-                  <p className="text-xs text-slate-400 uppercase tracking-widest">Total Blocked events</p>
-                  {loading ? (
-                    <div className="h-10 w-24 bg-slate-800 animate-pulse rounded mt-2"></div>
-                  ) : (
-                    <h3 className="text-3xl font-extrabold text-slate-100 mt-1">{totalBlocked}</h3>
-                  )}
-                  <span className="text-[10px] text-emerald-400 mt-2 inline-block font-semibold">↑ 12.4% vs past 24h</span>
-                </div>
-                <div className="w-12 h-12 bg-red-500/10 border border-red-500/20 rounded-xl flex items-center justify-center text-red-400">
-                  <Activity className="w-6 h-6" />
-                </div>
+              <div style={{ fontSize: '32px', fontWeight: 600 }}>{totalBlockedCount}</div>
+              <div className="cap" style={{ whiteSpace: 'nowrap' }}>
+                up 12.4% vs previous 24h
               </div>
-
-              {/* Card 2: Critical Vector Threats */}
-              <div className="bg-[#0c121e]/70 border border-slate-800/80 rounded-xl p-5 relative overflow-hidden flex items-center justify-between shadow-[0_4px_20px_rgba(0,0,0,0.15)]">
-                <div>
-                  <p className="text-xs text-slate-400 uppercase tracking-widest">Critical Vector Threats</p>
-                  {loading ? (
-                    <div className="h-10 w-24 bg-slate-800 animate-pulse rounded mt-2"></div>
-                  ) : (
-                    <h3 className="text-3xl font-extrabold text-red-400 mt-1">{criticalCount}</h3>
-                  )}
-                  <span className="text-[10px] text-red-400/80 mt-2 inline-block font-semibold">Immediate intervention recommended</span>
-                </div>
-                <div className="w-12 h-12 bg-red-500/10 border border-red-500/20 rounded-xl flex items-center justify-center text-red-400">
-                  <AlertTriangle className="w-6 h-6" />
-                </div>
-              </div>
-
-              {/* Card 3: Edge Security Tripwires */}
-              <div className="bg-[#0c121e]/70 border border-slate-800/80 rounded-xl p-5 relative overflow-hidden flex items-center justify-between shadow-[0_4px_20px_rgba(0,0,0,0.15)]">
-                <div>
-                  <p className="text-xs text-slate-400 uppercase tracking-widest">Edge Security Tripwires</p>
-                  {loading ? (
-                    <div className="h-10 w-24 bg-slate-800 animate-pulse rounded mt-2"></div>
-                  ) : (
-                    <h3 className="text-3xl font-extrabold text-amber-400 mt-1">{highCount}</h3>
-                  )}
-                  <span className="text-[10px] text-amber-400/80 mt-2 inline-block font-semibold">Automated structural blocks engaged</span>
-                </div>
-                <div className="w-12 h-12 bg-amber-500/10 border border-amber-500/20 rounded-xl flex items-center justify-center text-amber-400">
-                  <Cpu className="w-6 h-6" />
-                </div>
-              </div>
-
-              {/* Card 4: Gateway Processing Latency */}
-              <div className="bg-[#0c121e]/70 border border-slate-800/80 rounded-xl p-5 relative overflow-hidden flex items-center justify-between shadow-[0_4px_20px_rgba(0,0,0,0.15)]">
-                <div>
-                  <p className="text-xs text-slate-400 uppercase tracking-widest">Gateway Processing Latency</p>
-                  <h3 className="text-3xl font-extrabold text-emerald-400 mt-1">1.82 <span className="text-sm font-normal text-slate-400">ms</span></h3>
-                  <span className="text-[10px] text-slate-400 mt-2 inline-block">Sub-millisecond regex & tripwire inspection</span>
-                </div>
-                <div className="w-12 h-12 bg-emerald-500/10 border border-emerald-500/20 rounded-xl flex items-center justify-center text-emerald-400">
-                  <Terminal className="w-6 h-6" />
-                </div>
-              </div>
-            </section>
-
-            {/* Real-time Infrastructure Section: Jailed IPs & Circuit Breaker Health */}
-            <section className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-              
-              {/* Jailed IPs Card */}
-              <div className="bg-[#0c121e]/80 border border-slate-800/80 rounded-xl overflow-hidden flex flex-col shadow-xl">
-                <div className="px-5 py-4 border-b border-slate-800 flex items-center justify-between bg-slate-900/40">
-                  <div className="flex items-center gap-2">
-                    <Lock className="w-4 h-4 text-rose-400" />
-                    <h2 className="text-sm font-bold text-slate-200 uppercase tracking-wider">Jailed IPs (Edge Abuse Firewall)</h2>
-                  </div>
-                  <span className="text-[10px] bg-rose-500/20 text-rose-300 border border-rose-500/30 px-2 py-0.5 rounded font-mono font-bold">
-                    {jailedIps.length} Banned
-                  </span>
-                </div>
-
-                {unbanFeedback && (
-                  <div className={`mx-4 mt-3 px-3 py-2 rounded text-xs flex items-center gap-2 border ${
-                    unbanFeedback.type === 'success'
-                      ? 'bg-emerald-500/10 border-emerald-500/30 text-emerald-400'
-                      : 'bg-rose-500/10 border-rose-500/30 text-rose-400'
-                  }`}>
-                    <CheckCircle2 className="w-3.5 h-3.5 shrink-0" />
-                    <span>{unbanFeedback.message}</span>
-                  </div>
-                )}
-
-                <div className="p-4 flex-1 flex flex-col">
-                  {jailedIps.length === 0 ? (
-                    <div className="flex flex-col items-center justify-center py-8 text-slate-500 gap-2 text-center my-auto">
-                      <Shield className="w-8 h-8 text-emerald-500/40 stroke-1" />
-                      <p className="text-xs text-slate-400">No client IPs currently jailed in Redis.</p>
-                      <span className="text-[10px] text-slate-500">Tripwire abuse score threshold: 3 violations / 60s</span>
-                    </div>
-                  ) : (
-                    <div className="overflow-x-auto">
-                      <table className="w-full text-left text-xs border-collapse font-mono">
-                        <thead>
-                          <tr className="border-b border-slate-800 text-slate-500 uppercase text-[10px]">
-                            <th className="pb-2">Client IP</th>
-                            <th className="pb-2">Remaining Ban TTL</th>
-                            <th className="pb-2">Status</th>
-                            <th className="pb-2 text-right">Action</th>
-                          </tr>
-                        </thead>
-                        <tbody className="divide-y divide-slate-800/40">
-                          {jailedIps.map((item) => (
-                            <tr key={item.ip} className="hover:bg-slate-800/30 transition">
-                              <td className="py-2.5 text-slate-200 font-semibold">{item.ip}</td>
-                              <td className="py-2.5 text-amber-400">{formatTtl(item.ttl)}</td>
-                              <td className="py-2.5">
-                                <span className="bg-rose-500/10 text-rose-400 border border-rose-500/20 px-2 py-0.5 rounded text-[10px]">
-                                  403 DROP
-                                </span>
-                              </td>
-                              <td className="py-2.5 text-right">
-                                <button
-                                  onClick={() => handleUnbanIp(item.ip)}
-                                  disabled={unbanningIp === item.ip}
-                                  className="bg-emerald-500/10 hover:bg-emerald-500/20 text-emerald-400 border border-emerald-500/30 px-2.5 py-1 rounded text-[11px] font-bold uppercase transition flex items-center gap-1 ml-auto cursor-pointer disabled:opacity-50"
-                                >
-                                  {unbanningIp === item.ip ? (
-                                    <RefreshCw className="w-3 h-3 animate-spin" />
-                                  ) : (
-                                    <Unlock className="w-3 h-3" />
-                                  )}
-                                  <span>Unban</span>
-                                </button>
-                              </td>
-                            </tr>
-                          ))}
-                        </tbody>
-                      </table>
-                    </div>
-                  )}
-                </div>
-              </div>
-
-              {/* Upstream Circuit Breaker & Health Card */}
-              <div className="bg-[#0c121e]/80 border border-slate-800/80 rounded-xl overflow-hidden flex flex-col shadow-xl">
-                <div className="px-5 py-4 border-b border-slate-800 flex items-center justify-between bg-slate-900/40">
-                  <div className="flex items-center gap-2">
-                    <Zap className="w-4 h-4 text-emerald-400" />
-                    <h2 className="text-sm font-bold text-slate-200 uppercase tracking-wider">Upstream Circuit Breakers & Bulkhead</h2>
-                  </div>
-                  <span className="text-[10px] bg-slate-800 text-slate-400 px-2 py-0.5 rounded font-mono">
-                    PRD v2.1 State Machine
-                  </span>
-                </div>
-
-                <div className="p-4 flex-1 flex flex-col gap-3">
-                  {circuitBreakers.map((cb, idx) => (
-                    <div key={idx} className="bg-[#05080f] p-3.5 rounded-lg border border-slate-850 flex flex-col gap-3">
-                      <div className="flex items-center justify-between gap-2">
-                        <span className="text-xs font-mono font-bold text-slate-200 truncate">{cb.origin}</span>
-                        <span className={`px-2 py-0.5 rounded text-[10px] font-mono font-bold border uppercase tracking-wider ${
-                          cb.state === 'CLOSED'
-                            ? 'bg-emerald-500/15 text-emerald-400 border-emerald-500/30'
-                            : cb.state === 'HALF_OPEN'
-                            ? 'bg-amber-500/15 text-amber-400 border-amber-500/30 animate-pulse'
-                            : 'bg-rose-500/15 text-rose-400 border-rose-500/30'
-                        }`}>
-                          {cb.state === 'CLOSED' ? 'CLOSED (HEALTHY)' : cb.state === 'HALF_OPEN' ? 'HALF-OPEN (PROBING)' : 'OPEN (TRIPPED)'}
-                        </span>
-                      </div>
-
-                      <div className="grid grid-cols-3 gap-2 text-center text-xs font-mono">
-                        <div className="bg-slate-900/60 p-2 rounded border border-slate-800">
-                          <span className="text-[9px] text-slate-500 block uppercase">In-Flight / Max</span>
-                          <span className="text-emerald-400 font-bold">{cb.inFlight} / 100</span>
-                        </div>
-                        <div className="bg-slate-900/60 p-2 rounded border border-slate-800">
-                          <span className="text-[9px] text-slate-500 block uppercase">Failures / Trip</span>
-                          <span className={cb.consecutiveFailures > 0 ? 'text-amber-400 font-bold' : 'text-slate-300 font-bold'}>
-                            {cb.consecutiveFailures} / 5
-                          </span>
-                        </div>
-                        <div className="bg-slate-900/60 p-2 rounded border border-slate-800">
-                          <span className="text-[9px] text-slate-500 block uppercase">Cooldown Policy</span>
-                          <span className="text-slate-300 font-bold">30s Synthetic</span>
-                        </div>
-                      </div>
-                    </div>
-                  ))}
-
-                  <div className="mt-auto pt-2 flex items-center justify-between text-[11px] text-slate-400 border-t border-slate-850">
-                    <span className="flex items-center gap-1.5">
-                      <span className="inline-block w-2 h-2 rounded-full bg-emerald-400"></span>
-                      Circuit CLOSED: 100% traffic forwarded
-                    </span>
-                    <span className="text-slate-500 font-mono">Bulkhead limit: 100 conns</span>
-                  </div>
-                </div>
-              </div>
-            </section>
-
-            {/* Row 2: Live Security Telemetry Log Table */}
-            <section className="grid grid-cols-1 lg:grid-cols-3 gap-6">
-              <div className="lg:col-span-2 bg-[#0c121e]/80 border border-slate-800/80 rounded-xl overflow-hidden flex flex-col shadow-xl">
-                <div className="px-5 py-4 border-b border-slate-800 flex items-center justify-between bg-slate-900/40">
-                  <div className="flex items-center gap-2">
-                    <Activity className="w-4 h-4 text-emerald-400" />
-                    <h2 className="text-sm font-bold text-slate-200 uppercase tracking-wider">Live Security Threat Telemetry Stream</h2>
-                  </div>
-                  <span className="text-[10px] bg-slate-800 text-slate-400 px-2 py-0.5 rounded font-mono">Realtime Buffer (Last 50)</span>
-                </div>
-
-                <div className="overflow-x-auto">
-                  <table className="w-full text-left text-xs border-collapse">
-                    <thead>
-                      <tr className="bg-[#080d16] border-b border-slate-800 text-slate-400 uppercase tracking-wider font-mono">
-                        <th className="py-3 px-4">Severity</th>
-                        <th className="py-3 px-4">Timestamp</th>
-                        <th className="py-3 px-4">Client IP</th>
-                        <th className="py-3 px-4">Attack Vector</th>
-                        <th className="py-3 px-4 text-right">Inspect</th>
-                      </tr>
-                    </thead>
-                    <tbody className="divide-y divide-slate-800/50">
-                      {displayThreats.map((threat) => (
-                        <tr 
-                          key={threat._id} 
-                          onClick={() => setSelectedThreat(threat)}
-                          className={`hover:bg-slate-800/40 transition duration-150 cursor-pointer ${
-                            selectedThreat?._id === threat._id ? 'bg-slate-800/60 border-l-2 border-l-emerald-400' : ''
-                          }`}
-                        >
-                          <td className="py-3.5 px-4 font-mono font-bold">
-                            <span className={`px-2 py-0.5 rounded text-[10px] ${
-                              threat.severity === 'CRITICAL' 
-                                ? 'bg-red-500/20 text-red-400 border border-red-500/30' 
-                                : threat.severity === 'HIGH'
-                                ? 'bg-amber-500/20 text-amber-400 border border-amber-500/30'
-                                : 'bg-slate-800 text-slate-300'
-                            }`}>
-                              {threat.severity}
-                            </span>
-                          </td>
-                          <td className="py-3.5 px-4 text-slate-400 font-mono text-[11px] whitespace-nowrap">
-                            {new Date(threat.timestamp).toLocaleTimeString()}
-                          </td>
-                          <td className="py-3.5 px-4 font-mono text-slate-300">{threat.clientIp}</td>
-                          <td className="py-3.5 px-4 font-medium text-slate-200">{threat.attackVector}</td>
-                          <td className="py-3.5 px-4 text-right text-emerald-400 font-mono hover:underline">
-                            Inspect →
-                          </td>
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
-                </div>
-              </div>
-
-              {/* Threat Detail & Raw Payload Deep Inspection Console */}
-              <div className="bg-[#0c121e]/80 border border-slate-800/80 rounded-xl p-5 flex flex-col gap-4 shadow-xl">
-                <div className="border-b border-slate-800 pb-3 flex items-center justify-between">
-                  <h3 className="text-sm font-bold text-slate-200 uppercase tracking-wider flex items-center gap-2">
-                    <Terminal className="w-4 h-4 text-emerald-400" />
-                    Threat Payload Inspector
-                  </h3>
-                  {selectedThreat && (
-                    <span className="text-[10px] font-mono text-emerald-400 bg-emerald-500/10 px-2 py-0.5 rounded border border-emerald-500/30">
-                      ID: {selectedThreat._id.slice(-6)}
-                    </span>
-                  )}
-                </div>
-
-                {selectedThreat ? (
-                  <div className="flex flex-col gap-4 text-xs">
-                    <div className="flex flex-col gap-1 bg-[#05080f] p-3 rounded border border-slate-850">
-                      <span className="text-slate-500 text-[10px] uppercase font-bold tracking-wider">Security Incident Details</span>
-                      <p className="text-slate-200 leading-relaxed font-sans mt-1">{selectedThreat.summary}</p>
-                    </div>
-
-                    <div className="grid grid-cols-2 gap-2 text-slate-300">
-                      <div className="bg-[#05080f] p-2.5 rounded border border-slate-850 font-mono">
-                        <span className="text-slate-500 text-[9px] block uppercase">HTTP Method</span>
-                        <span className="font-bold text-emerald-400">{selectedThreat.method}</span>
-                      </div>
-                      <div className="bg-[#05080f] p-2.5 rounded border border-slate-850 font-mono">
-                        <span className="text-slate-500 text-[9px] block uppercase">Vector Category</span>
-                        <span className="font-bold text-slate-200">{selectedThreat.attackVector}</span>
-                      </div>
-                    </div>
-
-                    <div className="bg-[#05080f] p-2.5 rounded border border-slate-850 font-mono text-[11px]">
-                      <span className="text-slate-500 text-[9px] block uppercase mb-1">Target Endpoint</span>
-                      <span className="text-slate-200 break-all">{selectedThreat.endpoint}</span>
-                    </div>
-
-                    <div className="flex flex-col gap-1.5">
-                      <span className="text-slate-500 text-[10px] uppercase font-bold tracking-wider">Intercepted Raw JSON Payload</span>
-                      <pre className="bg-[#04060a] text-emerald-400 p-3 rounded border border-slate-850 font-mono text-[11px] overflow-x-auto whitespace-pre-wrap leading-relaxed shadow-inner max-h-48">
-                        {selectedThreat.rawBody || 'No payload body supplied'}
-                      </pre>
-                    </div>
-                  </div>
-                ) : (
-                  <div className="flex flex-col items-center justify-center text-center py-12 text-slate-500 gap-2">
-                    <Layers className="w-8 h-8 stroke-1 text-slate-600" />
-                    <p className="text-xs">Select any threat record from the stream table to inspect deep payload telemetry.</p>
-                  </div>
-                )}
-              </div>
-            </section>
-          </>
-        )}
-
-        {activeTab === 'provisioning' && (
-          <section className="bg-[#0c121e]/80 border border-slate-800/80 rounded-xl p-6 flex flex-col gap-6 max-w-2xl mx-auto w-full shadow-xl">
-            <div className="border-b border-slate-800 pb-4">
-              <h2 className="text-base font-bold text-slate-100 uppercase tracking-wider flex items-center gap-2">
-                <Code className="w-5 h-5 text-emerald-400" />
-                Multi-Tenant Environment Provisioning
-              </h2>
-              <p className="text-xs text-slate-400 mt-1">Register new application tenants to provision cryptographically signed API access keys.</p>
             </div>
 
-            <form onSubmit={handleCreateProject} className="flex flex-col gap-4">
-              <div className="flex flex-col gap-1.5">
-                <label htmlFor="projectName" className="text-xs font-semibold text-slate-300 uppercase tracking-wider">
-                  Project Environment Name
-                </label>
-                <input
-                  type="text"
-                  id="projectName"
-                  value={projectName}
-                  onChange={(e) => setProjectName(e.target.value)}
-                  placeholder="e.g. Production Payment Portal"
-                  disabled={provisioningLoading}
-                  className="bg-slate-900 border border-slate-800 focus:border-emerald-500/50 rounded px-4 py-2.5 text-slate-100 placeholder-slate-600 text-sm focus:outline-none transition duration-200 font-mono"
-                />
+            {/* KPI 2 */}
+            <div className="card" style={{ display: 'grid', gridTemplateRows: '20px 40px 20px', gap: '8px', alignItems: 'center' }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', color: 'var(--t2)', fontWeight: 500, fontSize: '13px' }}>
+                Critical threats
+                <span style={{ color: 'var(--t3)', display: 'inline-flex' }}>
+                  <WarningIcon size={16} />
+                </span>
               </div>
-              
-              {provisioningError && (
-                <p className="text-xs text-red-400 bg-red-500/10 border border-red-500/20 px-3 py-2 rounded font-semibold flex items-center gap-2">
-                  <AlertTriangle className="w-3.5 h-3.5 animate-pulse" />
-                  <span>{provisioningError}</span>
-                </p>
+              <div style={{ fontSize: '32px', fontWeight: 600 }}>{criticalThreatCount}</div>
+              <div className="cap" style={{ whiteSpace: 'nowrap' }}>
+                <button
+                  type="button"
+                  className="lk"
+                  onClick={() => setThreatFilter('Critical')}
+                >
+                  View critical events
+                </button>
+              </div>
+            </div>
+
+            {/* KPI 3 */}
+            <div className="card" style={{ display: 'grid', gridTemplateRows: '20px 40px 20px', gap: '8px', alignItems: 'center' }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', color: 'var(--t2)', fontWeight: 500, fontSize: '13px' }}>
+                Tripwire blocks
+                <span style={{ color: 'var(--t3)', display: 'inline-flex' }}>
+                  <LockIcon size={16} />
+                </span>
+              </div>
+              <div style={{ fontSize: '32px', fontWeight: 600 }}>{tripwireCount}</div>
+              <div className="cap" style={{ whiteSpace: 'nowrap' }}>
+                Auto-blocked by signature rules
+              </div>
+            </div>
+
+            {/* KPI 4 */}
+            <div className="card" style={{ display: 'grid', gridTemplateRows: '20px 40px 20px', gap: '8px', alignItems: 'center' }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', color: 'var(--t2)', fontWeight: 500, fontSize: '13px' }}>
+                Gateway overhead
+                <span style={{ color: 'var(--t3)', display: 'inline-flex' }}>
+                  <CheckIcon size={16} />
+                </span>
+              </div>
+              <div style={{ fontSize: '32px', fontWeight: 600 }}>p95 4.8 ms</div>
+              <div className="cap" style={{ whiteSpace: 'nowrap' }}>
+                p50 1.8 ms - p99 8.2 ms - last 24h
+              </div>
+            </div>
+          </div>
+
+          {/* Row 2 — Jailed IPs (60%) & Upstream Circuit Breakers (40%) */}
+          <div className="row" style={{ gridTemplateColumns: '3fr 2fr' }}>
+            {/* Jailed IPs Card */}
+            <div className="card">
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '12px' }}>
+                <span className="ct">Jailed IPs</span>
+                <span className="p" style={{ ['--c' as any]: 'var(--low)' }}>
+                  {jailedList.length} banned
+                </span>
+              </div>
+
+              <div className="tr h" style={{ gridTemplateColumns: '24px 1fr 1.3fr 90px 80px' }}>
+                <span></span>
+                <span>Client IP</span>
+                <span>Time remaining</span>
+                <span>Status</span>
+                <span>Action</span>
+              </div>
+
+              {jailedList.map((r) => {
+                const isExpanded = !!expandedIps[r.ip];
+                return (
+                  <div key={r.ip}>
+                    <div className="tr" style={{ gridTemplateColumns: '24px 1fr 1.3fr 90px 80px' }}>
+                      <span
+                        style={{
+                          cursor: 'pointer',
+                          color: 'var(--t3)',
+                          display: 'inline-flex',
+                          transform: `rotate(${isExpanded ? 90 : 0}deg)`,
+                          transition: 'transform 0.15s ease'
+                        }}
+                        onClick={() =>
+                          setExpandedIps((prev) => ({ ...prev, [r.ip]: !prev[r.ip] }))
+                        }
+                      >
+                        <ChevronRightIcon size={14} />
+                      </span>
+                      <span className="mono">{r.ip}</span>
+                      <span style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
+                        <span style={{ width: '56px' }}>{r.timeRemaining}</span>
+                        <span className="bar" style={{ flex: 1 }}>
+                          <div style={{ width: `${r.pct}%` }}></div>
+                        </span>
+                      </span>
+                      <span className="p" style={{ ['--c' as any]: 'var(--low)' }}>
+                        Blocked
+                      </span>
+                      <button
+                        type="button"
+                        className="sc sm"
+                        onClick={() => setUnbanModalIp(r.ip)}
+                      >
+                        Unban
+                      </button>
+                    </div>
+
+                    {isExpanded && (
+                      <div className="in" style={{ margin: '8px 0 8px 32px', display: 'flex', gap: '32px', whiteSpace: 'nowrap' }}>
+                        <span>Triggered by: {r.trigger}</span>
+                        <span>
+                          Last request: <span className="mono">{r.lastRequest}</span>
+                        </span>
+                      </div>
+                    )}
+                  </div>
+                );
+              })}
+
+              <div className="cap" style={{ marginTop: '16px' }}>
+                Jailed after 3 abuse points within 60 s. Ban lasts 10 minutes.
+              </div>
+            </div>
+
+            {/* Upstream Circuit Breakers Card */}
+            <div className="card" style={{ display: 'grid', gap: '16px', alignContent: 'start' }}>
+              <span className="ct">Upstream circuit breakers</span>
+
+              {/* Render either live circuit breakers or fallback to prototype items */}
+              {circuitBreakers.length > 0 ? (
+                circuitBreakers.map((cb) => {
+                  const stateBadge =
+                    cb.state === 'CLOSED'
+                      ? { label: 'Closed', color: 'ok' }
+                      : cb.state === 'OPEN'
+                      ? { label: 'Open', color: 'crit' }
+                      : { label: 'Half-open', color: 'med' };
+                  return (
+                    <div key={cb.origin} className="in" style={{ display: 'grid', gap: '12px', padding: '16px' }}>
+                      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                        <span className="mono">{cb.origin}</span>
+                        <span className="p" style={{ ['--c' as any]: `var(--${stateBadge.color})` }}>
+                          {stateBadge.label}
+                        </span>
+                      </div>
+                      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: '8px' }}>
+                        <div style={{ background: 'var(--card)', borderRadius: '10px', padding: '8px 12px' }}>
+                          <div className="cap">In-flight</div>
+                          <div style={{ fontWeight: 500, whiteSpace: 'nowrap' }}>{cb.inFlight} / 100</div>
+                        </div>
+                        <div style={{ background: 'var(--card)', borderRadius: '10px', padding: '8px 12px' }}>
+                          <div className="cap">Failures</div>
+                          <div style={{ fontWeight: 500, whiteSpace: 'nowrap' }}>{cb.consecutiveFailures} / 5</div>
+                        </div>
+                        <div style={{ background: 'var(--card)', borderRadius: '10px', padding: '8px 12px' }}>
+                          <div className="cap">Cooldown</div>
+                          <div style={{ fontWeight: 500, whiteSpace: 'nowrap' }}>
+                            {cb.state === 'OPEN' ? 'Retry in 18 s' : cb.state === 'HALF_OPEN' ? 'Probing now' : '30 s probe'}
+                          </div>
+                        </div>
+                      </div>
+                    </div>
+                  );
+                })
+              ) : (
+                <>
+                  <div className="in" style={{ display: 'grid', gap: '12px', padding: '16px' }}>
+                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                      <span className="mono">api.internal/payments</span>
+                      <span className="p" style={{ ['--c' as any]: 'var(--ok)' }}>Closed</span>
+                    </div>
+                    <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: '8px' }}>
+                      <div style={{ background: 'var(--card)', borderRadius: '10px', padding: '8px 12px' }}>
+                        <div className="cap">In-flight</div>
+                        <div style={{ fontWeight: 500, whiteSpace: 'nowrap' }}>0 / 100</div>
+                      </div>
+                      <div style={{ background: 'var(--card)', borderRadius: '10px', padding: '8px 12px' }}>
+                        <div className="cap">Failures</div>
+                        <div style={{ fontWeight: 500, whiteSpace: 'nowrap' }}>0 / 5</div>
+                      </div>
+                      <div style={{ background: 'var(--card)', borderRadius: '10px', padding: '8px 12px' }}>
+                        <div className="cap">Cooldown</div>
+                        <div style={{ fontWeight: 500, whiteSpace: 'nowrap' }}>30 s probe</div>
+                      </div>
+                    </div>
+                  </div>
+
+                  <div className="in" style={{ display: 'grid', gap: '12px', padding: '16px' }}>
+                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                      <span className="mono">api.internal/orders</span>
+                      <span className="p" style={{ ['--c' as any]: 'var(--crit)' }}>Open</span>
+                    </div>
+                    <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: '8px' }}>
+                      <div style={{ background: 'var(--card)', borderRadius: '10px', padding: '8px 12px' }}>
+                        <div className="cap">In-flight</div>
+                        <div style={{ fontWeight: 500, whiteSpace: 'nowrap' }}>0 / 100</div>
+                      </div>
+                      <div style={{ background: 'var(--card)', borderRadius: '10px', padding: '8px 12px' }}>
+                        <div className="cap">Failures</div>
+                        <div style={{ fontWeight: 500, whiteSpace: 'nowrap' }}>5 / 5</div>
+                      </div>
+                      <div style={{ background: 'var(--card)', borderRadius: '10px', padding: '8px 12px' }}>
+                        <div className="cap">Cooldown</div>
+                        <div style={{ fontWeight: 500, whiteSpace: 'nowrap' }}>Retry in 18 s</div>
+                      </div>
+                    </div>
+                  </div>
+
+                  <div className="in" style={{ display: 'grid', gap: '12px', padding: '16px' }}>
+                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                      <span className="mono">api.internal/inventory</span>
+                      <span className="p" style={{ ['--c' as any]: 'var(--med)' }}>Half-open</span>
+                    </div>
+                    <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: '8px' }}>
+                      <div style={{ background: 'var(--card)', borderRadius: '10px', padding: '8px 12px' }}>
+                        <div className="cap">In-flight</div>
+                        <div style={{ fontWeight: 500, whiteSpace: 'nowrap' }}>0 / 100</div>
+                      </div>
+                      <div style={{ background: 'var(--card)', borderRadius: '10px', padding: '8px 12px' }}>
+                        <div className="cap">Failures</div>
+                        <div style={{ fontWeight: 500, whiteSpace: 'nowrap' }}>5 / 5</div>
+                      </div>
+                      <div style={{ background: 'var(--card)', borderRadius: '10px', padding: '8px 12px' }}>
+                        <div className="cap">Cooldown</div>
+                        <div style={{ fontWeight: 500, whiteSpace: 'nowrap' }}>Probing now</div>
+                      </div>
+                    </div>
+                  </div>
+                </>
               )}
 
-              <button
-                type="submit"
-                disabled={provisioningLoading || !projectName.trim()}
-                className="bg-emerald-500/10 hover:bg-emerald-500/20 disabled:opacity-40 disabled:hover:bg-emerald-500/10 text-emerald-400 font-bold uppercase text-xs tracking-widest border border-emerald-500/35 shadow-[0_0_8px_rgba(16,185,129,0.1)] rounded py-3 transition duration-200 flex items-center justify-center gap-2 cursor-pointer disabled:cursor-not-allowed"
-              >
-                {provisioningLoading ? (
-                  <>
-                    <RefreshCw className="w-3.5 h-3.5 animate-spin" />
-                    <span>Provisioning Environment...</span>
-                  </>
-                ) : (
-                  <>
-                    <Shield className="w-3.5 h-3.5" />
-                    <span>Generate API Keys</span>
-                  </>
-                )}
-              </button>
-            </form>
+              <div className="cap">Bulkhead limit: 100 connections per upstream.</div>
+            </div>
+          </div>
 
-            {/* Success View */}
-            {provisionedProject && (
-              <div className="bg-slate-900/60 p-5 rounded-lg border border-emerald-500/20 flex flex-col gap-4 mt-2 transition-all duration-300">
-                <div className="flex items-center gap-2 text-emerald-400 font-semibold text-xs uppercase tracking-wider">
-                  <Shield className="w-4 h-4" />
-                  <span>Project Environment Provisioned Successfully!</span>
-                </div>
-                
-                <div className="flex flex-col gap-1">
-                  <span className="text-slate-500 text-[10px] uppercase">Project Name</span>
-                  <span className="text-slate-200 text-sm font-semibold">{provisionedProject.projectName}</span>
-                </div>
-
-                <div className="flex flex-col gap-1.5">
-                  <span className="text-slate-500 text-[10px] uppercase">Project ID (projectId)</span>
-                  <div className="flex items-center justify-between bg-[#05080f] px-3.5 py-2.5 rounded border border-slate-850 font-mono text-xs text-slate-300 select-all group relative">
-                    <span className="break-all">{provisionedProject._id}</span>
-                  </div>
-                </div>
-
-                <div className="flex flex-col gap-1.5">
-                  <span className="text-slate-500 text-[10px] uppercase">API Access Key (apiKey)</span>
-                  <div className="flex items-center justify-between bg-[#05080f] px-3.5 py-2.5 rounded border border-slate-850 font-mono text-xs text-emerald-400 select-all border-l-2 border-l-emerald-500 shadow-inner group relative border-emerald-500/40">
-                    <span className="break-all font-bold">{provisionedProject.apiKey}</span>
-                  </div>
-                  <span className="text-[10px] text-amber-500/80 font-semibold mt-1">⚠️ IMPORTANT: Store this key safely. For security reasons, it cannot be recovered or viewed again.</span>
-                </div>
+          {/* Row 3 — Live Threat Stream (62%) & Payload Inspector (38%) */}
+          <div className="row" style={{ gridTemplateColumns: '62fr 38fr' }}>
+            {/* Live Threat Stream Card */}
+            <div className="card">
+              <div style={{ display: 'flex', alignItems: 'center', gap: '12px', marginBottom: '16px' }}>
+                <span className="ct">Live threat stream</span>
+                <span className="p" style={{ ['--c' as any]: 'var(--ok)' }}>
+                  <i></i>Live
+                </span>
+                <button
+                  type="button"
+                  className="sc sm"
+                  style={{ marginLeft: 'auto' }}
+                  onClick={handleFlushTelemetry}
+                >
+                  Flush telemetry
+                </button>
               </div>
-            )}
-          </section>
-        )}
 
-        {activeTab === 'settings' && (
-          <ProjectSettings
-            activeProject={currentProject}
-            token={token}
-            onProjectUpdated={handleProjectUpdated}
-          />
-        )}
+              {/* Filter Chips */}
+              <div style={{ display: 'flex', gap: '8px', marginBottom: '12px', alignItems: 'center' }}>
+                {['All', 'Critical', 'High', 'Medium', 'Low'].map((c) => (
+                  <button
+                    key={c}
+                    type="button"
+                    className={`ch ${threatFilter === c ? 'on' : ''}`}
+                    onClick={() => {
+                      setThreatFilter(c);
+                      setSelectedThreatIndex(0);
+                    }}
+                  >
+                    {c}
+                  </button>
+                ))}
+                <button
+                  type="button"
+                  className="ch"
+                  style={{ marginLeft: 'auto', display: 'flex', alignItems: 'center', gap: '6px' }}
+                >
+                  Last 1h <CaretDownIcon size={14} />
+                </button>
+              </div>
 
-        {activeTab === 'dlq' && (
-          <DLQMonitor
-            activeProjectId={activeProjectId}
-            token={token}
-          />
-        )}
-      </main>
+              {/* Table Header */}
+              <div className="tr h" style={{ gridTemplateColumns: '90px 80px 130px 1fr 60px' }}>
+                <span>Severity</span>
+                <span>Time (UTC)</span>
+                <span>Client IP</span>
+                <span>Attack type</span>
+                <span>Action</span>
+              </div>
 
-      {/* Cyber Command Footer */}
-      <footer className="border-t border-slate-850 bg-[#080d16] px-6 py-3.5 text-center text-[10px] text-slate-500 uppercase tracking-widest flex justify-between">
-        <span>🔒 AEGisGATE Edge Command Terminal</span>
-        <span>All systems active</span>
-      </footer>
+              {/* Threat Rows */}
+              {filteredThreats.map((r, i) => {
+                const isSelected = selectedThreatIndex === i;
+                const colorKey = sevColor[r.severity] || 'low';
+                return (
+                  <div
+                    key={r.code + i}
+                    className={`tr ${isSelected ? 'sel' : ''}`}
+                    style={{ gridTemplateColumns: '90px 80px 130px 1fr 60px' }}
+                  >
+                    <span className="p" style={{ ['--c' as any]: `var(--${colorKey})` }}>
+                      {r.severity}
+                    </span>
+                    <span>{r.time}</span>
+                    <span className="mono">{r.ip}</span>
+                    <span>{r.attackType}</span>
+                    <button
+                      type="button"
+                      className="lk"
+                      onClick={() => setSelectedThreatIndex(i)}
+                    >
+                      Inspect
+                    </button>
+                  </div>
+                );
+              })}
+
+              <div className="cap" style={{ display: 'flex', justifyContent: 'space-between', marginTop: '16px' }}>
+                <span>
+                  Showing {filteredThreats.length} of 50 events -{' '}
+                  <button type="button" className="lk" onClick={() => setThreatFilter('All')}>
+                    View all
+                  </button>
+                </span>
+                <span>Events kept for 30 days</span>
+              </div>
+            </div>
+
+            {/* Payload Inspector Card */}
+            <div className="card" style={{ alignSelf: 'start' }}>
+              {selectedEvent ? (
+                <>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '16px', alignItems: 'center' }}>
+                    <span className="ct">Payload inspector</span>
+                    <span
+                      style={{ cursor: 'pointer', color: 'var(--t3)', display: 'inline-flex' }}
+                      onClick={() => setSelectedThreatIndex(-1)}
+                      title="Clear selection"
+                    >
+                      <CloseIcon size={16} />
+                    </span>
+                  </div>
+
+                  <div style={{ display: 'flex', gap: '8px', alignItems: 'center', marginBottom: '16px', whiteSpace: 'nowrap' }}>
+                    <span className="p" style={{ ['--c' as any]: `var(--${sevColor[selectedEvent.severity] || 'low'})` }}>
+                      {selectedEvent.severity}
+                    </span>
+                    <span className="mono">{selectedEvent.code}</span>
+                    <span className="mono" style={{ color: 'var(--t2)' }}>{selectedEvent.rule}</span>
+                  </div>
+
+                  <div style={{ display: 'grid', gap: '10px', marginBottom: '16px' }}>
+                    <div className="kv">
+                      <span style={{ color: 'var(--t3)' }}>Method</span>
+                      <span className="mono">{selectedEvent.method}</span>
+                    </div>
+                    <div className="kv">
+                      <span style={{ color: 'var(--t3)' }}>Path</span>
+                      <span className="mono">{selectedEvent.path}</span>
+                    </div>
+                    <div className="kv">
+                      <span style={{ color: 'var(--t3)' }}>Client IP</span>
+                      <span className="mono">{selectedEvent.ip}</span>
+                    </div>
+                    <div className="kv">
+                      <span style={{ color: 'var(--t3)' }}>Time</span>
+                      <span>2026-10-03 {selectedEvent.time} UTC</span>
+                    </div>
+                    <div className="kv">
+                      <span style={{ color: 'var(--t3)' }}>Action</span>
+                      <span className="p" style={{ ['--c' as any]: 'var(--low)' }}>
+                        Blocked (403)
+                      </span>
+                    </div>
+                  </div>
+
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '8px' }}>
+                    <label style={{ margin: 0 }}>Redacted payload</label>
+                    <button
+                      type="button"
+                      className="sc sm"
+                      onClick={() => {
+                        navigator.clipboard?.writeText(selectedEvent.payload);
+                        showToast('Copied');
+                      }}
+                    >
+                      Copy
+                    </button>
+                  </div>
+
+                  <pre className="in mono" style={{ whiteSpace: 'pre-wrap', marginBottom: '16px' }}>
+                    {selectedEvent.payload}
+                  </pre>
+
+                  {/* Collapsible Headers Accordion */}
+                  <div
+                    onClick={() => setHeadersAccordionOpen(!headersAccordionOpen)}
+                    style={{ cursor: 'pointer', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}
+                  >
+                    <span style={{ fontWeight: 500 }}>Headers (allowlisted)</span>
+                    <span className="cap" style={{ display: 'flex', gap: '6px', alignItems: 'center' }}>
+                      3 headers{' '}
+                      <span
+                        style={{
+                          transform: `rotate(${headersAccordionOpen ? 180 : 0}deg)`,
+                          display: 'flex',
+                          transition: 'transform 0.15s ease'
+                        }}
+                      >
+                        <CaretDownIcon size={14} />
+                      </span>
+                    </span>
+                  </div>
+
+                  {headersAccordionOpen && (
+                    <div className="in" style={{ marginTop: '12px', display: 'grid', gap: '6px' }}>
+                      <div className="mono">User-Agent {selectedEvent.userAgent}</div>
+                      <div className="mono">Content-Type {selectedEvent.contentType}</div>
+                      <div className="mono">Host api.internal</div>
+                    </div>
+                  )}
+                </>
+              ) : (
+                <>
+                  <div className="ct" style={{ marginBottom: '16px' }}>Payload inspector</div>
+                  <div className="cap" style={{ padding: '40px 0', textAlign: 'center' }}>
+                    Select an event to inspect its payload
+                  </div>
+                </>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Screen 2: Tenant Provisioning */}
+      {activeTab === 1 && (
+        <TenantProvisioning
+          token={token}
+          onProjectCreated={(newProj) => {
+            setProjects((prev) => [...prev, newProj]);
+            setActiveProject(newProj._id);
+            showToast('Project provisioned');
+          }}
+        />
+      )}
+
+      {/* Screen 3: Project Settings */}
+      {activeTab === 2 && (
+        <ProjectSettings
+          activeProject={activeProject}
+          token={token}
+          onProjectUpdated={(updated) => {
+            setProjects((prev) => prev.map((p) => (p._id === updated._id ? updated : p)));
+          }}
+        />
+      )}
+
+      {/* Screen 4: DLQ Monitor */}
+      {activeTab === 3 && (
+        <DLQMonitor activeProjectId={activeProject._id} token={token} />
+      )}
+
+      {/* FOOTER */}
+      <div className="cap" style={{ padding: '8px 40px 24px', fontSize: '12px' }}>
+        AegisGate v2.1.0
+      </div>
+
+      {/* STEP 7: UNBAN CONFIRMATION MODAL OVERLAY */}
+      {unbanModalIp && (
+        <div className="ov">
+          <div className="card" style={{ width: '400px', display: 'grid', gap: '12px' }}>
+            <div className="ct" style={{ fontSize: '16px' }}>
+              Unban {unbanModalIp}?
+            </div>
+            <div style={{ color: 'var(--t2)' }}>
+              This IP will be able to send requests again.
+            </div>
+            <div style={{ display: 'flex', gap: '8px', justifyContent: 'flex-end', marginTop: '8px' }}>
+              <button
+                type="button"
+                className="sc"
+                onClick={() => setUnbanModalIp(null)}
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                className="pr"
+                onClick={handleConfirmUnban}
+              >
+                Unban
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

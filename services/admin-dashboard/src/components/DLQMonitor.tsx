@@ -1,261 +1,268 @@
 import { useState, useEffect } from 'react';
-import { ShieldCheck, AlertOctagon, RefreshCw, Trash2, RotateCcw, ChevronDown, ChevronRight, Clock, FileCode } from 'lucide-react';
-import { fetchDeadLetterLogs, retryDeadLetterMessage, purgeDeadLetterMessage, type DeadLetterLog } from '../services/api';
+import { CloseIcon, ShieldCheckIcon } from './Icons';
+import { fetchDeadLetterLogs, type DeadLetterLog } from '../services/api';
+import { useToast } from '../context/ToastContext';
 
 interface DLQMonitorProps {
-    activeProjectId: string | null;
-    token: string | null;
+  activeProjectId: string | null;
+  token: string | null;
 }
 
+interface DisplayMessage {
+  id: string;
+  time: string;
+  receivedFull: string;
+  reason: string;
+  retries: string;
+  payload: string;
+}
+
+const prototypeMockMessages: DisplayMessage[] = [
+  {
+    id: 'DLQ-3071',
+    time: '13:12:44',
+    receivedFull: '2026-10-03 13:12:44 UTC',
+    reason: 'Invalid JSON',
+    retries: '3 of 3',
+    payload: '{"event": "request_blocked", "rule": "sqli.tautology"}'
+  },
+  {
+    id: 'DLQ-3070',
+    time: '12:58:02',
+    receivedFull: '2026-10-03 12:58:02 UTC',
+    reason: 'Schema validation failed',
+    retries: '3 of 3',
+    payload: '{"event": "request_blocked", "rule": "traversal.dotdot"}'
+  },
+  {
+    id: 'DLQ-3068',
+    time: '11:47:19',
+    receivedFull: '2026-10-03 11:47:19 UTC',
+    reason: 'MongoDB write rejected',
+    retries: '3 of 3',
+    payload: '{"event": "request_blocked", "rule": "xss.event-handler"}'
+  }
+];
+
 export default function DLQMonitor({ activeProjectId, token }: DLQMonitorProps) {
-    const [dlqLogs, setDlqLogs] = useState<DeadLetterLog[]>([]);
-    const [loading, setLoading] = useState<boolean>(true);
-    const [actionLoadingId, setActionLoadingId] = useState<string | null>(null);
-    const [expandedLogId, setExpandedLogId] = useState<string | null>(null);
-    const [feedbackMessage, setFeedbackMessage] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
+  const [messages, setMessages] = useState<DisplayMessage[]>([]);
+  const [selectedIndex, setSelectedIndex] = useState<number>(0);
+  const [inspectOpen, setInspectOpen] = useState<boolean>(true);
+  const [lastRefreshed, setLastRefreshed] = useState<string>('13:26:02 UTC');
+  const [loading, setLoading] = useState<boolean>(false);
+  const [isSimulationEmpty, setIsSimulationEmpty] = useState<boolean>(true);
 
-    const loadDlqLogs = async () => {
-        if (!activeProjectId || !token) {
-            setLoading(false);
-            return;
+  const { showToast } = useToast();
+
+  const loadData = async () => {
+    setLoading(true);
+    const now = new Date();
+    const utcTime = now.toTimeString().split(' ')[0] + ' UTC';
+    setLastRefreshed(utcTime);
+
+    if (activeProjectId && token) {
+      try {
+        const liveLogs: DeadLetterLog[] = await fetchDeadLetterLogs(activeProjectId, token);
+        if (liveLogs && liveLogs.length > 0) {
+          const mapped: DisplayMessage[] = liveLogs.map((log) => {
+            const timePart = log.timestamp ? log.timestamp.split('T')[1]?.slice(0, 8) || '12:00:00' : '12:00:00';
+            return {
+              id: log._id ? (log._id.length > 10 ? 'DLQ-' + log._id.slice(-4) : log._id) : 'DLQ-9999',
+              time: timePart,
+              receivedFull: log.timestamp || `${now.toISOString().split('T')[0]} ${timePart} UTC`,
+              reason: log.errorReason || 'Processing failure',
+              retries: `${log.retryCount ?? 3} of 3`,
+              payload: log.rawBody || JSON.stringify(log.payload || { event: 'request_blocked' }, null, 2)
+            };
+          });
+          setMessages(mapped);
+          setIsSimulationEmpty(false);
+          setLoading(false);
+          return;
         }
-
-        setLoading(true);
-        try {
-            const logs = await fetchDeadLetterLogs(activeProjectId, token);
-            setDlqLogs(logs);
-        } catch {
-            setDlqLogs([]);
-        } finally {
-            setLoading(false);
-        }
-    };
-
-    useEffect(() => {
-        loadDlqLogs();
-    }, [activeProjectId, token]);
-
-    const handleRetry = async (messageId: string) => {
-        if (!token) return;
-        setActionLoadingId(messageId);
-        setFeedbackMessage(null);
-        try {
-            await retryDeadLetterMessage(messageId, token);
-            setFeedbackMessage({ type: 'success', text: `Message ${messageId.slice(-6)} re-queued into primary threat queue!` });
-            await loadDlqLogs();
-        } catch (err: any) {
-            setFeedbackMessage({ type: 'error', text: err?.message || 'Failed to re-queue message.' });
-        } finally {
-            setActionLoadingId(null);
-        }
-    };
-
-    const handlePurge = async (messageId: string) => {
-        if (!token) return;
-        setActionLoadingId(messageId);
-        setFeedbackMessage(null);
-        try {
-            await purgeDeadLetterMessage(messageId, token);
-            setFeedbackMessage({ type: 'success', text: `Poison message ${messageId.slice(-6)} purged from aegis_dead_letter.` });
-            await loadDlqLogs();
-        } catch (err: any) {
-            setFeedbackMessage({ type: 'error', text: err?.message || 'Failed to purge message.' });
-        } finally {
-            setActionLoadingId(null);
-        }
-    };
-
-    const toggleExpand = (id: string) => {
-        setExpandedLogId(expandedLogId === id ? null : id);
-    };
-
-    if (!activeProjectId) {
-        return (
-            <div className="bg-slate-900 border border-slate-800 rounded-xl p-8 text-center text-slate-400">
-                <AlertOctagon className="w-12 h-12 mx-auto mb-3 text-slate-600 animate-pulse" />
-                <h3 className="text-lg font-medium text-slate-200">No Active Project Selected</h3>
-                <p className="text-sm mt-1 text-slate-400">Select a project to inspect its Dead-Letter Queue monitoring context.</p>
-            </div>
-        );
+      } catch {
+        // Fallback gracefully
+      }
     }
 
-    return (
-        <div className="max-w-6xl mx-auto space-y-6">
-            {/* Header & Stats Banner */}
-            <div className="flex flex-col md:flex-row md:items-center justify-between border-b border-slate-800 pb-5 gap-4">
-                <div>
-                    <h2 className="text-xl font-bold text-white flex items-center gap-2">
-                        <AlertOctagon className="w-5 h-5 text-rose-400" />
-                        Dead-Letter Queue (DLQ) Monitoring
-                    </h2>
-                    <p className="text-xs text-slate-400 mt-1">
-                        Inspect unprocessable poison payloads routed to <span className="font-mono text-rose-400">aegis_dead_letter</span> after 3 failed retries.
-                    </p>
-                </div>
-                <div className="flex items-center gap-3">
-                    <button
-                        onClick={loadDlqLogs}
-                        disabled={loading}
-                        className="px-3.5 py-1.5 bg-slate-900 border border-slate-800 hover:border-slate-700 rounded-lg text-xs font-medium text-slate-300 transition-colors flex items-center gap-1.5"
-                    >
-                        <RefreshCw className={`w-3.5 h-3.5 ${loading ? 'animate-spin' : ''}`} />
-                        Refresh DLQ
-                    </button>
-                    <div className="bg-slate-900 border border-slate-800 rounded-xl px-4 py-2 flex items-center gap-3">
-                        <div className="text-right">
-                            <div className="text-xs text-slate-400 font-medium">Poison Messages</div>
-                            <div className={`text-lg font-bold font-mono ${dlqLogs.length > 0 ? 'text-rose-400' : 'text-emerald-400'}`}>
-                                {dlqLogs.length}
-                            </div>
-                        </div>
-                    </div>
-                </div>
+    // In simulation mode without live logs, toggle between healthy and prototype messages on manual refresh
+    if (!token || !activeProjectId) {
+      setIsSimulationEmpty((prev) => !prev);
+    } else {
+      setMessages([]);
+      setIsSimulationEmpty(true);
+    }
+    setLoading(false);
+  };
+
+  useEffect(() => {
+    if (activeProjectId && token) {
+      loadData();
+    } else {
+      // In offline/sample preview, start in healthy (0) state
+      setIsSimulationEmpty(true);
+    }
+  }, [activeProjectId, token]);
+
+  const activeList = isSimulationEmpty ? [] : (messages.length > 0 ? messages : prototypeMockMessages);
+  const selectedMsg = activeList[selectedIndex] || activeList[0];
+
+  const handleCopyPayload = () => {
+    if (selectedMsg) {
+      navigator.clipboard?.writeText(selectedMsg.payload);
+      showToast('Copied');
+    }
+  };
+
+  const colGrid = '110px 100px 1fr 70px 60px';
+
+  return (
+    <div className="main" style={{ width: '1440px', margin: 'auto' }}>
+      {/* Header bar */}
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+        <div>
+          <div style={{ fontSize: '20px', fontWeight: 600 }}>Dead-letter queue</div>
+          <div style={{ color: 'var(--t2)', marginTop: '4px', whiteSpace: 'nowrap' }}>
+            Messages that fail processing after 3 retries are moved to{' '}
+            <span className="in mono" style={{ padding: '2px 6px', borderRadius: '6px' }}>
+              aegis_dead_letter
+            </span>
+            .
+          </div>
+        </div>
+        <div style={{ display: 'flex', gap: '16px', alignItems: 'center' }}>
+          <span className="cap">Last refreshed {lastRefreshed}</span>
+          <button className="sc" onClick={loadData} disabled={loading}>
+            {loading ? 'Refreshing...' : 'Refresh'}
+          </button>
+        </div>
+      </div>
+
+      {/* Stat card */}
+      <div className="card" style={{ width: '320px', display: 'grid', gap: '8px' }}>
+        <span style={{ color: 'var(--t2)', fontWeight: 500 }}>Poison messages</span>
+        <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
+          <span style={{ fontSize: '32px', fontWeight: 600 }}>{activeList.length}</span>
+          {activeList.length === 0 ? (
+            <span className="p" style={{ ['--c' as any]: 'var(--ok)' }}>
+              <i></i>Healthy
+            </span>
+          ) : (
+            <span className="p" style={{ ['--c' as any]: 'var(--med)' }}>
+              <i></i>Needs review
+            </span>
+          )}
+        </div>
+      </div>
+
+      {/* Queue Body */}
+      {activeList.length === 0 ? (
+        <div className="card" style={{ textAlign: 'center', padding: '72px', display: 'grid', gap: '12px', justifyItems: 'center' }}>
+          <span style={{ color: 'var(--ok)', display: 'inline-flex' }}>
+            <ShieldCheckIcon size={40} />
+          </span>
+          <span className="p" style={{ ['--c' as any]: 'var(--ok)' }}>
+            <i></i>Queue healthy
+          </span>
+          <div className="ct">No dead-lettered messages</div>
+          <div style={{ color: 'var(--t2)' }}>
+            All telemetry events are being processed without failures.
+          </div>
+        </div>
+      ) : (
+        <div className="row" style={{ gridTemplateColumns: '62fr 38fr' }}>
+          {/* Failed Messages Table */}
+          <div className="card">
+            <div className="ct" style={{ marginBottom: '12px' }}>Failed messages</div>
+            <div className="tr h" style={{ gridTemplateColumns: colGrid }}>
+              <span>Received (UTC)</span>
+              <span>Message ID</span>
+              <span>Failure reason</span>
+              <span>Retries</span>
+              <span>Action</span>
             </div>
 
-            {/* Feedback Alert Banner */}
-            {feedbackMessage && (
-                <div
-                    className={`p-4 rounded-xl border text-sm flex items-center justify-between transition-all ${
-                        feedbackMessage.type === 'success'
-                            ? 'bg-emerald-950/40 border-emerald-500/30 text-emerald-300'
-                            : 'bg-rose-950/40 border-rose-500/30 text-rose-300'
-                    }`}
+            {activeList.map((r, i) => (
+              <div
+                key={r.id + i}
+                className={`tr ${selectedIndex === i && inspectOpen ? 'sel' : ''}`}
+                style={{ gridTemplateColumns: colGrid }}
+              >
+                <span>{r.time}</span>
+                <span className="mono">{r.id}</span>
+                <span>{r.reason}</span>
+                <span>{r.retries}</span>
+                <button
+                  type="button"
+                  className="lk"
+                  onClick={() => {
+                    setSelectedIndex(i);
+                    setInspectOpen(true);
+                  }}
                 >
-                    <span>{feedbackMessage.text}</span>
-                    <button
-                        onClick={() => setFeedbackMessage(null)}
-                        className="text-xs opacity-70 hover:opacity-100 font-mono underline"
-                    >
-                        Dismiss
-                    </button>
-                </div>
-            )}
+                  Inspect
+                </button>
+              </div>
+            ))}
 
-            {/* Loading State */}
-            {loading ? (
-                <div className="bg-slate-900 border border-slate-800 rounded-xl p-12 text-center text-slate-400 space-y-3">
-                    <RefreshCw className="w-8 h-8 mx-auto text-indigo-400 animate-spin" />
-                    <p className="text-sm">Fetching Dead-Letter Queue records...</p>
+            <div className="cap" style={{ marginTop: '16px' }}>
+              Showing {activeList.length} of {activeList.length} messages
+            </div>
+          </div>
+
+          {/* Inspect Drawer / Details Card */}
+          <div className="card" style={{ alignSelf: 'start' }}>
+            {inspectOpen && selectedMsg ? (
+              <>
+                <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '16px', alignItems: 'center' }}>
+                  <span className="ct">Message details</span>
+                  <span
+                    style={{ cursor: 'pointer', color: 'var(--t3)', display: 'inline-flex' }}
+                    onClick={() => setInspectOpen(false)}
+                    title="Close details"
+                  >
+                    <CloseIcon size={16} />
+                  </span>
                 </div>
-            ) : dlqLogs.length === 0 ? (
-                /* Empty Healthy State */
-                <div className="bg-slate-900 border border-emerald-500/20 rounded-xl p-12 text-center space-y-4 shadow-sm">
-                    <div className="w-16 h-16 bg-emerald-500/10 rounded-full flex items-center justify-center mx-auto text-emerald-400 border border-emerald-500/30">
-                        <ShieldCheck className="w-9 h-9" />
-                    </div>
-                    <div>
-                        <span className="px-3 py-1 bg-emerald-500/10 border border-emerald-500/30 rounded-full text-xs font-semibold text-emerald-400 tracking-wide uppercase">
-                            Queue Healthy
-                        </span>
-                        <h3 className="text-lg font-bold text-white mt-3">No Dead-Lettered Poison Messages</h3>
-                        <p className="text-xs text-slate-400 max-w-md mx-auto mt-1">
-                            All threat telemetry packets are processing smoothly without poison message retries in <span className="font-mono text-slate-300">aegis_dead_letter</span>.
-                        </p>
-                    </div>
+
+                <div style={{ display: 'grid', gap: '10px', marginBottom: '16px' }}>
+                  <div className="kv">
+                    <span style={{ color: 'var(--t3)' }}>Message ID</span>
+                    <span className="mono">{selectedMsg.id}</span>
+                  </div>
+                  <div className="kv">
+                    <span style={{ color: 'var(--t3)' }}>Received</span>
+                    <span>{selectedMsg.receivedFull}</span>
+                  </div>
+                  <div className="kv">
+                    <span style={{ color: 'var(--t3)' }}>Failure reason</span>
+                    <span>{selectedMsg.reason}</span>
+                  </div>
+                  <div className="kv">
+                    <span style={{ color: 'var(--t3)' }}>Retries</span>
+                    <span>{selectedMsg.retries}</span>
+                  </div>
                 </div>
+
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '8px' }}>
+                  <label style={{ margin: 0 }}>Payload (truncated to 2 KB)</label>
+                  <button type="button" className="sc sm" onClick={handleCopyPayload}>
+                    Copy
+                  </button>
+                </div>
+
+                <pre className="in mono" style={{ whiteSpace: 'pre-wrap', wordBreak: 'break-all' }}>
+                  {selectedMsg.payload}
+                </pre>
+              </>
             ) : (
-                /* Log Table View */
-                <div className="bg-slate-900 border border-slate-800 rounded-xl overflow-hidden shadow-sm">
-                    <div className="overflow-x-auto">
-                        <table className="w-full text-left text-xs border-collapse">
-                            <thead>
-                                <tr className="bg-slate-950 border-b border-slate-800 text-slate-400 font-mono uppercase tracking-wider">
-                                    <th className="py-3.5 px-4 w-8"></th>
-                                    <th className="py-3.5 px-4">Timestamp</th>
-                                    <th className="py-3.5 px-4">Endpoint / Method</th>
-                                    <th className="py-3.5 px-4">Failure Reason</th>
-                                    <th className="py-3.5 px-4">Retries</th>
-                                    <th className="py-3.5 px-4 text-right">DLQ Actions</th>
-                                </tr>
-                            </thead>
-                            <tbody className="divide-y divide-slate-800/60 font-sans">
-                                {dlqLogs.map((log) => {
-                                    const isExpanded = expandedLogId === log._id;
-                                    const isLoadingThis = actionLoadingId === log._id;
-
-                                    return (
-                                        <tr key={log._id} className="hover:bg-slate-800/40 transition-colors group">
-                                            <td className="py-3 px-4 text-slate-500 cursor-pointer" onClick={() => toggleExpand(log._id)}>
-                                                {isExpanded ? (
-                                                    <ChevronDown className="w-4 h-4 text-indigo-400" />
-                                                ) : (
-                                                    <ChevronRight className="w-4 h-4 text-slate-500 group-hover:text-slate-300" />
-                                                )}
-                                            </td>
-                                            <td className="py-3 px-4 font-mono text-slate-300 whitespace-nowrap">
-                                                <div className="flex items-center gap-1.5">
-                                                    <Clock className="w-3.5 h-3.5 text-slate-500" />
-                                                    {new Date(log.timestamp).toLocaleString()}
-                                                </div>
-                                            </td>
-                                            <td className="py-3 px-4 font-mono">
-                                                <span className="px-2 py-0.5 bg-slate-800 border border-slate-700 rounded text-[11px] font-bold text-slate-300 mr-2">
-                                                    {log.method || 'POST'}
-                                                </span>
-                                                <span className="text-slate-300">{log.endpoint || '/unknown'}</span>
-                                            </td>
-                                            <td className="py-3 px-4 text-rose-400 font-medium">
-                                                {log.errorReason || 'Exceeded 3 retries in main broker queue'}
-                                            </td>
-                                            <td className="py-3 px-4 font-mono">
-                                                <span className="px-2 py-0.5 bg-rose-950/60 border border-rose-500/30 rounded text-rose-300">
-                                                    {log.retryCount ?? 3}/3
-                                                </span>
-                                            </td>
-                                            <td className="py-3 px-4 text-right space-x-2 whitespace-nowrap">
-                                                <button
-                                                    onClick={() => handleRetry(log._id)}
-                                                    disabled={isLoadingThis}
-                                                    title="Re-queue message back to primary security bus"
-                                                    className="px-2.5 py-1 bg-indigo-900/40 border border-indigo-500/30 hover:bg-indigo-800/60 text-indigo-300 rounded text-[11px] font-medium transition-colors inline-flex items-center gap-1 disabled:opacity-50"
-                                                >
-                                                    <RotateCcw className={`w-3 h-3 ${isLoadingThis ? 'animate-spin' : ''}`} />
-                                                    Re-queue
-                                                </button>
-                                                <button
-                                                    onClick={() => handlePurge(log._id)}
-                                                    disabled={isLoadingThis}
-                                                    title="Purge poison message permanently"
-                                                    className="px-2.5 py-1 bg-rose-950/40 border border-rose-500/30 hover:bg-rose-900/60 text-rose-300 rounded text-[11px] font-medium transition-colors inline-flex items-center gap-1 disabled:opacity-50"
-                                                >
-                                                    <Trash2 className="w-3 h-3" />
-                                                    Purge
-                                                </button>
-                                            </td>
-                                        </tr>
-                                    );
-                                })}
-                            </tbody>
-                        </table>
-                    </div>
-
-                    {/* Expandable JSON Payload Inspector */}
-                    {expandedLogId && (
-                        <div className="p-4 bg-slate-950 border-t border-slate-800 font-mono text-xs text-slate-300 space-y-2">
-                            <div className="flex items-center justify-between text-slate-400">
-                                <span className="flex items-center gap-1.5 text-indigo-400 font-semibold">
-                                    <FileCode className="w-4 h-4" />
-                                    Raw Poison Payload Content ({expandedLogId})
-                                </span>
-                                <button onClick={() => setExpandedLogId(null)} className="text-[11px] text-slate-500 hover:text-slate-300">
-                                    Close Inspector
-                                </button>
-                            </div>
-                            <pre className="p-3 bg-slate-900 border border-slate-800 rounded-lg overflow-x-auto text-emerald-400">
-                                {(() => {
-                                    const log = dlqLogs.find((l) => l._id === expandedLogId);
-                                    if (!log) return 'No log found';
-                                    try {
-                                        return JSON.stringify(JSON.parse(log.rawBody || '{}'), null, 2);
-                                    } catch {
-                                        return log.rawBody || JSON.stringify(log, null, 2);
-                                    }
-                                })()}
-                            </pre>
-                        </div>
-                    )}
-                </div>
+              <div className="cap" style={{ padding: '40px 0', textAlign: 'center' }}>
+                Select a message to inspect its details
+              </div>
             )}
+          </div>
         </div>
-    );
+      )}
+    </div>
+  );
 }

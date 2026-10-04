@@ -26,6 +26,70 @@ export interface DeadLetterLog {
     createdAt?: string;
 }
 
+export interface JailedIpRecord {
+    ip: string;
+    ttl: number;
+}
+
+export interface CircuitBreakerRecord {
+    origin: string;
+    state: 'CLOSED' | 'OPEN' | 'HALF_OPEN';
+    consecutiveFailures: number;
+    inFlight: number;
+    lastStateChange: number;
+}
+
+export interface TelemetryResponse {
+    totalBlocks: number;
+    criticalCount: number;
+    highCount: number;
+    logs: any[];
+}
+
+/**
+ * Fetches all registered tenant projects for the authenticated user.
+ */
+export const fetchProjects = async (token: string): Promise<Project[]> => {
+    try {
+        const response = await fetch(`${baseURL}/api/v1/projects`, {
+            headers: {
+                'Authorization': `Bearer ${token}`
+            }
+        });
+        if (!response.ok) {
+            return [];
+        }
+        return await response.json();
+    } catch {
+        return [];
+    }
+};
+
+/**
+ * Provisions a new tenant project and generates its API key.
+ */
+export const createProject = async (
+    params: { name?: string; projectName?: string },
+    token: string
+): Promise<Project> => {
+    const projectName = (params.projectName || params.name || '').trim();
+    const response = await fetch(`${baseURL}/api/v1/projects`, {
+        method: 'POST',
+        headers: {
+            'Content-Type': 'application/json',
+            'Authorization': `Bearer ${token}`
+        },
+        body: JSON.stringify({ projectName })
+    });
+
+    if (!response.ok) {
+        const errData = await response.json().catch(() => ({}));
+        throw new Error(errData.message || `Failed to create project (HTTP ${response.status})`);
+    }
+
+    return response.json();
+};
+
 /**
  * Updates settings for a specified tenant project.
  */
@@ -119,19 +183,6 @@ export const purgeDeadLetterMessage = async (
     }
 };
 
-export interface JailedIpRecord {
-    ip: string;
-    ttl: number;
-}
-
-export interface CircuitBreakerRecord {
-    origin: string;
-    state: 'CLOSED' | 'OPEN' | 'HALF_OPEN';
-    consecutiveFailures: number;
-    inFlight: number;
-    lastStateChange: number;
-}
-
 /**
  * Fetches all currently banned client IPs and their remaining TTLs from Gateway Core.
  */
@@ -199,3 +250,92 @@ export const fetchCircuitBreakers = async (token?: string): Promise<CircuitBreak
     }
 };
 
+/**
+ * Fetches live telemetry data for a project.
+ */
+export const fetchTelemetry = async (projectId: string, token: string): Promise<TelemetryResponse> => {
+    const response = await fetch(`${baseURL}/api/v1/analytics/telemetry`, {
+        headers: {
+            'X-Project-Id': projectId,
+            'Authorization': `Bearer ${token}`
+        },
+        signal: AbortSignal.timeout(3000)
+    });
+    if (!response.ok) {
+        throw new Error(`HTTP error ${response.status}`);
+    }
+    return response.json();
+};
+
+/**
+ * User login.
+ */
+export const login = async (credentials: { email: string; password: string }): Promise<{ token: string }> => {
+    const response = await fetch(`${baseURL}/api/v1/auth/login`, {
+        method: 'POST',
+        headers: {
+            'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({
+            email: credentials.email.trim(),
+            password: credentials.password.trim()
+        })
+    });
+    const data = await response.json();
+    if (!response.ok) {
+        throw new Error(data.message || `HTTP error ${response.status}`);
+    }
+    return data;
+};
+
+/**
+ * User registration.
+ */
+export const register = async (credentials: { email: string; password: string }): Promise<{ token: string }> => {
+    const response = await fetch(`${baseURL}/api/v1/auth/register`, {
+        method: 'POST',
+        headers: {
+            'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({
+            email: credentials.email.trim(),
+            password: credentials.password.trim()
+        })
+    });
+    const data = await response.json();
+    if (!response.ok) {
+        throw new Error(data.message || `HTTP error ${response.status}`);
+    }
+    return data;
+};
+
+// Aliases matching prompt conventions
+export const getProjects = fetchProjects;
+export const updateProject = updateProjectSettings;
+export const getJailedIps = fetchJailedIps;
+export const unbanIp = unbanClientIp;
+export const getCircuitBreakers = fetchCircuitBreakers;
+export const getTelemetry = fetchTelemetry;
+
+export const api = {
+    getProjects,
+    fetchProjects,
+    createProject,
+    updateProject,
+    updateProjectSettings,
+    getJailedIps,
+    fetchJailedIps,
+    unbanIp,
+    unbanClientIp,
+    getCircuitBreakers,
+    fetchCircuitBreakers,
+    getTelemetry,
+    fetchTelemetry,
+    fetchDeadLetterLogs,
+    retryDeadLetterMessage,
+    purgeDeadLetterMessage,
+    login,
+    register
+};
+
+export default api;

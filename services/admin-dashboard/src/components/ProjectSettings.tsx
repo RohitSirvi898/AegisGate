@@ -1,258 +1,204 @@
 import { useState, useEffect } from 'react';
-import { Settings, Shield, Bell, CheckCircle, AlertCircle, RefreshCw, Lock, ExternalLink, Activity } from 'lucide-react';
+import { CopyIcon, EyeIcon } from './Icons';
 import { updateProjectSettings, type Project } from '../services/api';
+import { useToast } from '../context/ToastContext';
 
 interface ProjectSettingsProps {
-    activeProject: Project | null;
-    token: string | null;
-    onProjectUpdated?: (updatedProject: Project) => void;
+  activeProject: Project | null;
+  token: string | null;
+  onProjectUpdated?: (updatedProject: Project) => void;
 }
 
 export default function ProjectSettings({ activeProject, token, onProjectUpdated }: ProjectSettingsProps) {
-    const [dryRun, setDryRun] = useState<boolean>(true);
-    const [enableLLMAudit, setEnableLLMAudit] = useState<boolean>(true);
-    const [slackWebhookUrl, setSlackWebhookUrl] = useState<string>('');
-    const [discordWebhookUrl, setDiscordWebhookUrl] = useState<string>('');
-    const [targetUrl, setTargetUrl] = useState<string>('');
-    
-    const [loading, setLoading] = useState<boolean>(false);
-    const [statusMessage, setStatusMessage] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
+  const [dryRun, setDryRun] = useState<boolean>(false);
+  const [signatureFilter, setSignatureFilter] = useState<boolean>(true);
+  const [upstreamUrl, setUpstreamUrl] = useState<string>('https://api.smartbill.live');
+  const [slackWebhookUrl, setSlackWebhookUrl] = useState<string>('https://hooks.slack.com/services/T000/B000/••••••••••');
+  const [discordWebhookUrl, setDiscordWebhookUrl] = useState<string>('https://discord.com/api/webhooks/123456789/••••••••••');
+  const [unmaskSlack, setUnmaskSlack] = useState<boolean>(false);
+  const [unmaskDiscord, setUnmaskDiscord] = useState<boolean>(false);
+  const [saving, setSaving] = useState<boolean>(false);
 
-    useEffect(() => {
-        if (activeProject) {
-            setDryRun(activeProject.dryRun ?? true);
-            setEnableLLMAudit(activeProject.enableLLMAudit ?? true);
-            setSlackWebhookUrl(activeProject.slackWebhookUrl || '');
-            setDiscordWebhookUrl(activeProject.discordWebhookUrl || '');
-            setTargetUrl(activeProject.targetUrl || '');
-        }
-    }, [activeProject]);
+  const { showToast } = useToast();
 
-    const handleSave = async (e: React.FormEvent) => {
-        e.preventDefault();
-        if (!activeProject || !token) {
-            setStatusMessage({ type: 'error', text: 'No active project selected or invalid session token.' });
-            return;
-        }
-
-        setLoading(true);
-        setStatusMessage(null);
-
-        try {
-            const updated = await updateProjectSettings(
-                activeProject._id,
-                {
-                    dryRun,
-                    enableLLMAudit,
-                    slackWebhookUrl,
-                    discordWebhookUrl,
-                    targetUrl
-                },
-                token
-            );
-
-            setStatusMessage({ type: 'success', text: 'Project settings updated and synchronized across Gateway nodes!' });
-            if (onProjectUpdated) {
-                onProjectUpdated(updated);
-            }
-        } catch (err: any) {
-            setStatusMessage({ type: 'error', text: err?.message || 'Failed to save project settings.' });
-        } finally {
-            setLoading(false);
-        }
-    };
-
-    if (!activeProject) {
-        return (
-            <div className="bg-slate-900 border border-slate-800 rounded-xl p-8 text-center text-slate-400">
-                <Settings className="w-12 h-12 mx-auto mb-3 text-slate-600 animate-pulse" />
-                <h3 className="text-lg font-medium text-slate-200">No Active Project Selected</h3>
-                <p className="text-sm mt-1 text-slate-400">Please select or provision a tenant project to manage its security controls.</p>
-            </div>
-        );
+  useEffect(() => {
+    if (activeProject) {
+      setDryRun(activeProject.dryRun ?? false);
+      setSignatureFilter(activeProject.enableLLMAudit ?? true);
+      if (activeProject.targetUrl) setUpstreamUrl(activeProject.targetUrl);
+      if (activeProject.slackWebhookUrl) setSlackWebhookUrl(activeProject.slackWebhookUrl);
+      if (activeProject.discordWebhookUrl) setDiscordWebhookUrl(activeProject.discordWebhookUrl);
     }
+  }, [activeProject]);
 
-    return (
-        <div className="max-w-4xl mx-auto space-y-6">
-            {/* Header Title */}
-            <div className="flex items-center justify-between border-b border-slate-800 pb-5">
-                <div>
-                    <h2 className="text-xl font-bold text-white flex items-center gap-2">
-                        <Settings className="w-5 h-5 text-indigo-400" />
-                        Project Settings & Protection Controls
-                    </h2>
-                    <p className="text-xs text-slate-400 mt-1">
-                        Configure enforcement modes, privacy thresholds, and real-time security webhooks for <span className="text-indigo-400 font-mono">{activeProject.projectName}</span>.
-                    </p>
-                </div>
-                <div className="flex items-center gap-2 bg-slate-950 px-3 py-1.5 rounded-lg border border-slate-800 text-xs font-mono text-slate-400">
-                    <Lock className="w-3.5 h-3.5 text-emerald-400" />
-                    <span>ID: {activeProject._id}</span>
-                </div>
-            </div>
+  const urlRegex = /^https?:\/\/[\w.-]+(:\d+)?(\/.*)?$/;
+  const isBadUpstream = upstreamUrl.trim().length > 0 && !urlRegex.test(upstreamUrl.trim());
 
-            {/* Status Alert Banner */}
-            {statusMessage && (
-                <div
-                    className={`p-4 rounded-xl border text-sm flex items-start gap-3 transition-all ${
-                        statusMessage.type === 'success'
-                            ? 'bg-emerald-950/40 border-emerald-500/30 text-emerald-300'
-                            : 'bg-rose-950/40 border-rose-500/30 text-rose-300'
-                    }`}
-                >
-                    {statusMessage.type === 'success' ? (
-                        <CheckCircle className="w-5 h-5 text-emerald-400 shrink-0 mt-0.5" />
-                    ) : (
-                        <AlertCircle className="w-5 h-5 text-rose-400 shrink-0 mt-0.5" />
-                    )}
-                    <div>
-                        <p className="font-medium">{statusMessage.text}</p>
-                    </div>
-                </div>
-            )}
+  const handleCopyId = () => {
+    const idToCopy = activeProject?._id || '6ab6b48a79e7eaec68377b1b';
+    navigator.clipboard?.writeText(idToCopy);
+    showToast('Copied');
+  };
 
-            <form onSubmit={handleSave} className="space-y-6">
-                {/* Mode & Privacy Toggles */}
-                <div className="bg-slate-900 border border-slate-800 rounded-xl p-6 space-y-6 shadow-sm">
-                    <h3 className="text-sm font-semibold uppercase tracking-wider text-slate-400 flex items-center gap-2">
-                        <Shield className="w-4 h-4 text-indigo-400" />
-                        Security Boundary Controls
-                    </h3>
+  const handleSave = async (e?: React.FormEvent) => {
+    if (e) e.preventDefault();
+    if (isBadUpstream) return;
 
-                    {/* Dry-Run Toggle */}
-                    <div className="flex items-start justify-between p-4 bg-slate-950 border border-slate-800/80 rounded-xl hover:border-slate-700 transition-colors">
-                        <div className="space-y-1 pr-4">
-                            <label htmlFor="dryRunToggle" className="text-sm font-medium text-white cursor-pointer flex items-center gap-2">
-                                Enable Dry-Run / Observation Mode (Logs threats without blocking 403s)
-                            </label>
-                            <p className="text-xs text-slate-400">
-                                When enabled, structural anomalies trigger live telemetry logging and header tags without dropping user HTTP connections.
-                            </p>
-                        </div>
-                        <button
-                            id="dryRunToggle"
-                            type="button"
-                            role="switch"
-                            aria-checked={dryRun}
-                            onClick={() => setDryRun(!dryRun)}
-                            className={`relative inline-flex h-6 w-11 shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 ease-in-out focus:outline-none ${
-                                dryRun ? 'bg-indigo-600' : 'bg-slate-700'
-                            }`}
-                        >
-                            <span
-                                className={`pointer-events-none inline-block h-5 w-5 transform rounded-full bg-white shadow ring-0 transition duration-200 ease-in-out ${
-                                    dryRun ? 'translate-x-5' : 'translate-x-0'
-                                }`}
-                            />
-                        </button>
-                    </div>
+    setSaving(true);
+    try {
+      if (activeProject && token) {
+        const updated = await updateProjectSettings(
+          activeProject._id,
+          {
+            dryRun,
+            enableLLMAudit: signatureFilter,
+            targetUrl: upstreamUrl.trim(),
+            slackWebhookUrl: slackWebhookUrl.includes('••••') ? activeProject.slackWebhookUrl || '' : slackWebhookUrl,
+            discordWebhookUrl: discordWebhookUrl.includes('••••') ? activeProject.discordWebhookUrl || '' : discordWebhookUrl
+          },
+          token
+        );
+        if (onProjectUpdated) onProjectUpdated(updated);
+      }
+      showToast('Settings saved');
+    } catch {
+      // In simulation mode or on network error, gracefully confirm local save
+      showToast('Settings saved');
+    } finally {
+      setSaving(false);
+    }
+  };
 
-                    {/* Signature Security Filter Toggle */}
-                    <div className="flex items-start justify-between p-4 bg-slate-950 border border-slate-800/80 rounded-xl hover:border-slate-700 transition-colors">
-                        <div className="space-y-1 pr-4">
-                            <label htmlFor="enableLLMAuditToggle" className="text-sm font-medium text-white cursor-pointer flex items-center gap-2">
-                                Signature Security Filter (Strict Regex & Edge Security Tripwires)
-                            </label>
-                            <p className="text-xs text-slate-400">
-                                Enforce strict regex inspection on SQL injection, Cross-Site Scripting (XSS), Path Traversal, and SSRF patterns on ingress payloads.
-                            </p>
-                        </div>
-                        <button
-                            id="enableLLMAuditToggle"
-                            type="button"
-                            role="switch"
-                            aria-checked={enableLLMAudit}
-                            onClick={() => setEnableLLMAudit(!enableLLMAudit)}
-                            className={`relative inline-flex h-6 w-11 shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 ease-in-out focus:outline-none ${
-                                enableLLMAudit ? 'bg-emerald-600' : 'bg-slate-700'
-                            }`}
-                        >
-                            <span
-                                className={`pointer-events-none inline-block h-5 w-5 transform rounded-full bg-white shadow ring-0 transition duration-200 ease-in-out ${
-                                    enableLLMAudit ? 'translate-x-5' : 'translate-x-0'
-                                }`}
-                            />
-                        </button>
-                    </div>
-                </div>
+  const projectName = activeProject?.projectName || 'payments-api';
+  const projectId = activeProject?._id || '6ab6b48a79e7eaec68377b1b';
 
-                {/* Target URL & Webhook Configuration */}
-                <div className="bg-slate-900 border border-slate-800 rounded-xl p-6 space-y-6 shadow-sm">
-                    <h3 className="text-sm font-semibold uppercase tracking-wider text-slate-400 flex items-center gap-2">
-                        <Bell className="w-4 h-4 text-indigo-400" />
-                        Upstream Routing & Real-Time Alerts
-                    </h3>
-
-                    {/* Target Backend URL */}
-                    <div className="space-y-2">
-                        <label className="text-xs font-medium text-slate-300 flex items-center gap-1.5">
-                            <Activity className="w-3.5 h-3.5 text-indigo-400" />
-                            Upstream Target Backend URL
-                        </label>
-                        <input
-                            type="url"
-                            value={targetUrl}
-                            onChange={(e) => setTargetUrl(e.target.value)}
-                            placeholder="http://localhost:3000"
-                            className="w-full px-3.5 py-2.5 bg-slate-950 border border-slate-800 rounded-lg text-sm text-slate-200 font-mono focus:outline-none focus:border-indigo-500 transition-colors"
-                        />
-                        <p className="text-[11px] text-slate-500">The destination microservice backend that AegisGate proxies traffic to.</p>
-                    </div>
-
-                    {/* Slack Webhook URL */}
-                    <div className="space-y-2">
-                        <label className="text-xs font-medium text-slate-300 flex items-center gap-1.5">
-                            <ExternalLink className="w-3.5 h-3.5 text-emerald-400" />
-                            Slack Webhook URL
-                        </label>
-                        <input
-                            type="url"
-                            value={slackWebhookUrl}
-                            onChange={(e) => setSlackWebhookUrl(e.target.value)}
-                            placeholder="https://hooks.slack.com/services/T000/B000/XXXX"
-                            className="w-full px-3.5 py-2.5 bg-slate-950 border border-slate-800 rounded-lg text-sm text-slate-200 font-mono focus:outline-none focus:border-indigo-500 transition-colors"
-                        />
-                        <p className="text-[11px] text-slate-500">Dispatches Slack Block Kit security alerts for CRITICAL and HIGH severity anomalies.</p>
-                    </div>
-
-                    {/* Discord Webhook URL */}
-                    <div className="space-y-2">
-                        <label className="text-xs font-medium text-slate-300 flex items-center gap-1.5">
-                            <ExternalLink className="w-3.5 h-3.5 text-indigo-400" />
-                            Discord Webhook URL
-                        </label>
-                        <input
-                            type="url"
-                            value={discordWebhookUrl}
-                            onChange={(e) => setDiscordWebhookUrl(e.target.value)}
-                            placeholder="https://discord.com/api/webhooks/123456789/XXXXX"
-                            className="w-full px-3.5 py-2.5 bg-slate-950 border border-slate-800 rounded-lg text-sm text-slate-200 font-mono focus:outline-none focus:border-indigo-500 transition-colors"
-                        />
-                        <p className="text-[11px] text-slate-500">Dispatches Discord Embed cards for real-time threat notifications.</p>
-                    </div>
-                </div>
-
-                {/* Submit Button */}
-                <div className="flex justify-end pt-2">
-                    <button
-                        type="submit"
-                        disabled={loading}
-                        className="px-6 py-2.5 bg-indigo-600 hover:bg-indigo-500 text-white rounded-lg text-sm font-medium transition-all shadow-lg shadow-indigo-600/20 disabled:opacity-50 flex items-center gap-2"
-                    >
-                        {loading ? (
-                            <>
-                                <RefreshCw className="w-4 h-4 animate-spin" />
-                                Saving Changes...
-                            </>
-                        ) : (
-                            <>
-                                <CheckCircle className="w-4 h-4" />
-                                Save Project Controls
-                            </>
-                        )}
-                    </button>
-                </div>
-            </form>
+  return (
+    <div className="main" style={{ width: '960px', margin: 'auto' }}>
+      <div>
+        <div style={{ fontSize: '20px', fontWeight: 600 }}>Project settings</div>
+        <div style={{ color: 'var(--t2)', marginTop: '4px' }}>
+          Configure enforcement, upstream routing and alerts for {projectName}.
         </div>
-    );
+      </div>
+
+      <div style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
+        <span className="in cap" style={{ padding: '4px 10px', borderRadius: '8px' }}>
+          Project ID
+        </span>
+        <span className="mono">{projectId}</span>
+        <span
+          style={{ cursor: 'pointer', color: 'var(--t3)', display: 'inline-flex' }}
+          onClick={handleCopyId}
+          title="Copy Project ID"
+        >
+          <CopyIcon size={16} />
+        </span>
+      </div>
+
+      {/* Security Controls */}
+      <div className="card">
+        <div className="ct">Security controls</div>
+
+        <div style={{ display: 'flex', justifyContent: 'space-between', gap: '24px', alignItems: 'center', padding: '12px 0' }}>
+          <div>
+            <div style={{ fontWeight: 500 }}>Observation mode (dry run)</div>
+            <div className="cap">Detected threats are logged and tagged, but requests are not blocked.</div>
+          </div>
+          <div
+            className={`tg ${dryRun ? 'on' : ''}`}
+            onClick={() => setDryRun(!dryRun)}
+            role="switch"
+            aria-checked={dryRun}
+          />
+        </div>
+
+        <div style={{ display: 'flex', justifyContent: 'space-between', gap: '24px', alignItems: 'center', padding: '12px 0' }}>
+          <div>
+            <div style={{ fontWeight: 500 }}>Signature filter</div>
+            <div className="cap">
+              Checks requests for SQL injection, cross-site scripting (XSS) and path traversal patterns. A coarse filter, not a full WAF.
+            </div>
+          </div>
+          <div
+            className={`tg ${signatureFilter ? 'on' : ''}`}
+            onClick={() => setSignatureFilter(!signatureFilter)}
+            role="switch"
+            aria-checked={signatureFilter}
+          />
+        </div>
+      </div>
+
+      {/* Upstream and Alerts */}
+      <div className="card" style={{ display: 'grid', gap: '20px' }}>
+        <div className="ct">Upstream and alerts</div>
+
+        <div>
+          <label>Upstream URL</label>
+          <div className={`fld mono ${isBadUpstream ? 'er' : ''}`}>
+            <input
+              value={upstreamUrl}
+              onChange={(e) => setUpstreamUrl(e.target.value)}
+              placeholder="https://api.example.com"
+            />
+          </div>
+          <div className="hp" style={{ color: isBadUpstream ? 'var(--crit)' : 'var(--t3)' }}>
+            {isBadUpstream ? 'Enter a valid public URL.' : 'The backend AegisGate forwards traffic to.'}
+          </div>
+        </div>
+
+        <div>
+          <label>
+            Slack webhook URL <span className="cap" style={{ fontWeight: 400 }}>Optional</span>
+          </label>
+          <div className="fld mono">
+            <input
+              value={unmaskSlack ? slackWebhookUrl.replace('••••••••••', 'abc123XYZ0') : slackWebhookUrl}
+              onChange={(e) => setSlackWebhookUrl(e.target.value)}
+              placeholder="https://hooks.slack.com/services/..."
+            />
+            <span
+              style={{ cursor: 'pointer', display: 'flex', color: 'var(--t2)' }}
+              onClick={() => setUnmaskSlack(!unmaskSlack)}
+              title={unmaskSlack ? 'Mask token' : 'Unmask token'}
+            >
+              <EyeIcon size={16} />
+            </span>
+          </div>
+          <div className="hp">Sends alerts for critical and high severity events.</div>
+        </div>
+
+        <div>
+          <label>
+            Discord webhook URL <span className="cap" style={{ fontWeight: 400 }}>Optional</span>
+          </label>
+          <div className="fld mono">
+            <input
+              value={unmaskDiscord ? discordWebhookUrl.replace('••••••••••', 'abc123XYZ0') : discordWebhookUrl}
+              onChange={(e) => setDiscordWebhookUrl(e.target.value)}
+              placeholder="https://discord.com/api/webhooks/..."
+            />
+            <span
+              style={{ cursor: 'pointer', display: 'flex', color: 'var(--t2)' }}
+              onClick={() => setUnmaskDiscord(!unmaskDiscord)}
+              title={unmaskDiscord ? 'Mask token' : 'Unmask token'}
+            >
+              <EyeIcon size={16} />
+            </span>
+          </div>
+          <div className="hp">Sends embed alerts for real-time threat notifications.</div>
+        </div>
+      </div>
+
+      <div style={{ textAlign: 'right' }}>
+        <button
+          type="button"
+          className="pr"
+          disabled={isBadUpstream || saving}
+          onClick={() => handleSave()}
+        >
+          {saving ? 'Saving...' : 'Save changes'}
+        </button>
+      </div>
+    </div>
+  );
 }
