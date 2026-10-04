@@ -69,7 +69,7 @@ export default function AuthScreen() {
     try {
       const data = await apiLogin({ email, password });
       if (data.token) {
-        login(data.token);
+        login(data.token, { email: email.trim(), role: 'admin' });
         navigate('/dashboard');
       } else {
         throw new Error('Authentication token not received.');
@@ -78,7 +78,7 @@ export default function AuthScreen() {
       // Graceful simulation fallback: if server is offline, generate a mock token so console can be previewed
       if (!err.message || err.message.includes('fetch') || err.message.includes('Failed to fetch') || err.message.includes('NetworkError')) {
         const mockToken = 'mock_jwt_' + btoa(email || 'demo');
-        login(mockToken);
+        login(mockToken, { email: email.trim(), role: 'admin' });
         navigate('/dashboard');
       } else {
         setError(err.message || 'Invalid credentials.');

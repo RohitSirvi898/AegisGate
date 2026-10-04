@@ -104,7 +104,7 @@ export default function DLQMonitor({ activeProjectId, token }: DLQMonitorProps) 
     }
   }, [activeProjectId, token]);
 
-  const activeList = isSimulationEmpty ? [] : (messages.length > 0 ? messages : prototypeMockMessages);
+  const activeList = token ? messages : (isSimulationEmpty ? [] : prototypeMockMessages);
   const selectedMsg = activeList[selectedIndex] || activeList[0];
 
   const handleCopyPayload = () => {

@@ -10,11 +10,17 @@ interface ProjectSettingsProps {
 }
 
 export default function ProjectSettings({ activeProject, token, onProjectUpdated }: ProjectSettingsProps) {
-  const [dryRun, setDryRun] = useState<boolean>(false);
-  const [signatureFilter, setSignatureFilter] = useState<boolean>(true);
-  const [upstreamUrl, setUpstreamUrl] = useState<string>('https://api.smartbill.live');
-  const [slackWebhookUrl, setSlackWebhookUrl] = useState<string>('https://hooks.slack.com/services/T000/B000/••••••••••');
-  const [discordWebhookUrl, setDiscordWebhookUrl] = useState<string>('https://discord.com/api/webhooks/123456789/••••••••••');
+  const [dryRun, setDryRun] = useState<boolean>(() => activeProject ? (activeProject.dryRun ?? false) : false);
+  const [signatureFilter, setSignatureFilter] = useState<boolean>(() => activeProject ? (activeProject.enableLLMAudit ?? true) : true);
+  const [upstreamUrl, setUpstreamUrl] = useState<string>(() =>
+    token ? (activeProject?.targetUrl || '') : (activeProject?.targetUrl || 'https://api.smartbill.live')
+  );
+  const [slackWebhookUrl, setSlackWebhookUrl] = useState<string>(() =>
+    token ? (activeProject?.slackWebhookUrl || '') : (activeProject?.slackWebhookUrl || 'https://hooks.slack.com/services/T000/B000/••••••••••')
+  );
+  const [discordWebhookUrl, setDiscordWebhookUrl] = useState<string>(() =>
+    token ? (activeProject?.discordWebhookUrl || '') : (activeProject?.discordWebhookUrl || 'https://discord.com/api/webhooks/123456789/••••••••••')
+  );
   const [unmaskSlack, setUnmaskSlack] = useState<boolean>(false);
   const [unmaskDiscord, setUnmaskDiscord] = useState<boolean>(false);
   const [saving, setSaving] = useState<boolean>(false);
@@ -22,20 +28,36 @@ export default function ProjectSettings({ activeProject, token, onProjectUpdated
   const { showToast } = useToast();
 
   useEffect(() => {
-    if (activeProject) {
-      setDryRun(activeProject.dryRun ?? false);
-      setSignatureFilter(activeProject.enableLLMAudit ?? true);
-      if (activeProject.targetUrl) setUpstreamUrl(activeProject.targetUrl);
-      if (activeProject.slackWebhookUrl) setSlackWebhookUrl(activeProject.slackWebhookUrl);
-      if (activeProject.discordWebhookUrl) setDiscordWebhookUrl(activeProject.discordWebhookUrl);
+    if (token) {
+      if (activeProject) {
+        setDryRun(activeProject.dryRun ?? false);
+        setSignatureFilter(activeProject.enableLLMAudit ?? true);
+        setUpstreamUrl(activeProject.targetUrl || '');
+        setSlackWebhookUrl(activeProject.slackWebhookUrl || '');
+        setDiscordWebhookUrl(activeProject.discordWebhookUrl || '');
+      } else {
+        setDryRun(false);
+        setSignatureFilter(true);
+        setUpstreamUrl('');
+        setSlackWebhookUrl('');
+        setDiscordWebhookUrl('');
+      }
+    } else {
+      // Unauthenticated demo / preview mode
+      setDryRun(activeProject?.dryRun ?? false);
+      setSignatureFilter(activeProject?.enableLLMAudit ?? true);
+      setUpstreamUrl(activeProject?.targetUrl || 'https://api.smartbill.live');
+      setSlackWebhookUrl(activeProject?.slackWebhookUrl || 'https://hooks.slack.com/services/T000/B000/••••••••••');
+      setDiscordWebhookUrl(activeProject?.discordWebhookUrl || 'https://discord.com/api/webhooks/123456789/••••••••••');
     }
-  }, [activeProject]);
+  }, [activeProject, token]);
 
   const urlRegex = /^https?:\/\/[\w.-]+(:\d+)?(\/.*)?$/;
   const isBadUpstream = upstreamUrl.trim().length > 0 && !urlRegex.test(upstreamUrl.trim());
 
   const handleCopyId = () => {
-    const idToCopy = activeProject?._id || '6ab6b48a79e7eaec68377b1b';
+    const idToCopy = activeProject?._id || (token ? '' : '6ab6b48a79e7eaec68377b1b');
+    if (!idToCopy) return;
     navigator.clipboard?.writeText(idToCopy);
     showToast('Copied');
   };
@@ -43,6 +65,7 @@ export default function ProjectSettings({ activeProject, token, onProjectUpdated
   const handleSave = async (e?: React.FormEvent) => {
     if (e) e.preventDefault();
     if (isBadUpstream) return;
+    if (token && !activeProject) return;
 
     setSaving(true);
     try {
@@ -53,8 +76,8 @@ export default function ProjectSettings({ activeProject, token, onProjectUpdated
             dryRun,
             enableLLMAudit: signatureFilter,
             targetUrl: upstreamUrl.trim(),
-            slackWebhookUrl: slackWebhookUrl.includes('••••') ? activeProject.slackWebhookUrl || '' : slackWebhookUrl,
-            discordWebhookUrl: discordWebhookUrl.includes('••••') ? activeProject.discordWebhookUrl || '' : discordWebhookUrl
+            slackWebhookUrl: slackWebhookUrl.trim(),
+            discordWebhookUrl: discordWebhookUrl.trim()
           },
           token
         );
@@ -69,8 +92,26 @@ export default function ProjectSettings({ activeProject, token, onProjectUpdated
     }
   };
 
-  const projectName = activeProject?.projectName || 'payments-api';
-  const projectId = activeProject?._id || '6ab6b48a79e7eaec68377b1b';
+  if (token && !activeProject) {
+    return (
+      <div className="main" style={{ width: '960px', margin: 'auto' }}>
+        <div>
+          <div style={{ fontSize: '20px', fontWeight: 600 }}>Project settings</div>
+          <div style={{ color: 'var(--t2)', marginTop: '4px' }}>
+            No tenant project selected.
+          </div>
+        </div>
+        <div className="card" style={{ textAlign: 'center', padding: '48px 24px', display: 'grid', gap: '12px', justifyItems: 'center' }}>
+          <div style={{ color: 'var(--t2)' }}>
+            Please provision a tenant project first to configure enforcement, routing, and alert webhooks.
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  const projectName = activeProject?.projectName || (token ? 'No Project Selected' : 'payments-api');
+  const projectId = activeProject?._id || (token ? '' : '6ab6b48a79e7eaec68377b1b');
 
   return (
     <div className="main" style={{ width: '960px', margin: 'auto' }}>
@@ -85,14 +126,16 @@ export default function ProjectSettings({ activeProject, token, onProjectUpdated
         <span className="in cap" style={{ padding: '4px 10px', borderRadius: '8px' }}>
           Project ID
         </span>
-        <span className="mono">{projectId}</span>
-        <span
-          style={{ cursor: 'pointer', color: 'var(--t3)', display: 'inline-flex' }}
-          onClick={handleCopyId}
-          title="Copy Project ID"
-        >
-          <CopyIcon size={16} />
-        </span>
+        <span className="mono">{projectId || '—'}</span>
+        {projectId && (
+          <span
+            style={{ cursor: 'pointer', color: 'var(--t3)', display: 'inline-flex' }}
+            onClick={handleCopyId}
+            title="Copy Project ID"
+          >
+            <CopyIcon size={16} />
+          </span>
+        )}
       </div>
 
       {/* Security Controls */}

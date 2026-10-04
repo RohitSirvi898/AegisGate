@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import { useNavigate } from 'react-router-dom';
 import {
   ShieldIcon,
@@ -36,7 +36,6 @@ const sevColor: Record<string, string> = {
   LOW: 'low'
 };
 
-// Prototype Sample Data for Threat Events
 interface PrototypeEvent {
   severity: string;
   code: string;
@@ -44,6 +43,7 @@ interface PrototypeEvent {
   method: string;
   path: string;
   time: string;
+  timestamp: string;
   payload: string;
   userAgent: string;
   contentType: string;
@@ -51,14 +51,74 @@ interface PrototypeEvent {
   attackType: string;
 }
 
-const mockEvents: PrototypeEvent[] = [
+interface PrototypeJailItem {
+  ip: string;
+  timeRemaining: string;
+  pct: number;
+  trigger: string;
+  lastRequest: string;
+}
+
+type TimeWindow = '15m' | '1h' | '24h' | '7d';
+
+interface TimeWindowOption {
+  id: TimeWindow;
+  label: string;
+  durationMs: number;
+}
+
+const TIME_WINDOWS: TimeWindowOption[] = [
+  { id: '15m', label: 'Last 15m', durationMs: 15 * 60 * 1000 },
+  { id: '1h', label: 'Last 1h', durationMs: 60 * 60 * 1000 },
+  { id: '24h', label: 'Last 24h', durationMs: 24 * 60 * 60 * 1000 },
+  { id: '7d', label: 'Last 7d', durationMs: 7 * 24 * 60 * 60 * 1000 }
+];
+
+// ==========================================
+// MOCK DATA FIXTURES (For Unauthenticated Preview Only)
+// ==========================================
+const MOCK_METRICS = {
+  totalBlocks: 148,
+  criticalCount: 42,
+  tripwireCount: 65,
+  overhead: 'p95 4.8 ms'
+};
+
+const MOCK_PROJECTS: Project[] = [
+  { _id: 'proj_smartbill', projectName: 'SmartBill AI', apiKey: 'ag_live_1', dryRun: false, enableLLMAudit: true, slackWebhookUrl: '', discordWebhookUrl: '' },
+  { _id: 'proj_pregatrack', projectName: 'PregaTrack', apiKey: 'ag_live_2', dryRun: false, enableLLMAudit: true, slackWebhookUrl: '', discordWebhookUrl: '' },
+  { _id: 'proj_payments', projectName: 'payments-api', apiKey: 'ag_live_3', dryRun: false, enableLLMAudit: true, slackWebhookUrl: '', discordWebhookUrl: '' }
+];
+
+const MOCK_CIRCUIT_BREAKERS: CircuitBreakerRecord[] = [
+  { origin: 'api.internal/payments', state: 'CLOSED', inFlight: 0, consecutiveFailures: 0, lastStateChange: Date.now() },
+  { origin: 'api.internal/orders', state: 'OPEN', inFlight: 0, consecutiveFailures: 5, lastStateChange: Date.now() },
+  { origin: 'api.internal/inventory', state: 'HALF_OPEN', inFlight: 0, consecutiveFailures: 5, lastStateChange: Date.now() }
+];
+
+const MOCK_JAILED_IPS: PrototypeJailItem[] = [
+  { ip: '198.51.100.42', timeRemaining: '8m 05s', pct: 80, trigger: 'Rate limit', lastRequest: 'POST /oauth/token' },
+  { ip: '203.0.113.19', timeRemaining: '3m 30s', pct: 35, trigger: 'Rate limit', lastRequest: 'GET /api/v1/invoices' },
+  { ip: '91.198.174.3', timeRemaining: '6m 40s', pct: 65, trigger: 'Signature rule', lastRequest: 'POST /api/v1/auth/login' },
+  { ip: '185.220.101.9', timeRemaining: '1m 12s', pct: 12, trigger: 'Rate limit', lastRequest: 'GET /api/v1/customers' },
+  { ip: '45.227.254.40', timeRemaining: '9m 10s', pct: 92, trigger: 'Signature rule', lastRequest: 'GET /api/v1/files/download' },
+  { ip: '192.0.2.88', timeRemaining: '5m 25s', pct: 54, trigger: 'Rate limit', lastRequest: 'POST /api/v1/search' }
+];
+
+// Helper to format mock timestamps relative to now
+const nowMs = Date.now();
+const formatIso = (offsetMs: number) => new Date(nowMs - offsetMs).toISOString();
+const formatTimeOnly = (offsetMs: number) => new Date(nowMs - offsetMs).toTimeString().split(' ')[0] || '12:00:00';
+
+const MOCK_THREATS: PrototypeEvent[] = [
   {
     severity: 'Critical',
     code: 'EV-10492',
     rule: 'sqli.tautology',
     method: 'POST',
     path: '/api/v1/auth/login',
-    time: '13:25:08',
+    time: formatTimeOnly(8 * 60 * 1000),
+    timestamp: formatIso(8 * 60 * 1000), // 8 mins ago
     payload: '{\n  "username": "admin\' OR \'1\'=\'1\' --",\n  "password": "[REDACTED]"\n}',
     userAgent: 'sqlmap/1.6.4',
     contentType: 'application/json',
@@ -71,7 +131,8 @@ const mockEvents: PrototypeEvent[] = [
     rule: 'traversal.dotdot',
     method: 'GET',
     path: '/api/v1/files/download',
-    time: '13:19:08',
+    time: formatTimeOnly(12 * 60 * 1000),
+    timestamp: formatIso(12 * 60 * 1000), // 12 mins ago
     payload: '{\n  "path": "../../etc/passwd"\n}',
     userAgent: 'curl/8.4.0',
     contentType: 'application/json',
@@ -84,7 +145,8 @@ const mockEvents: PrototypeEvent[] = [
     rule: 'xss.script-tag',
     method: 'POST',
     path: '/api/v1/comments',
-    time: '13:11:42',
+    time: formatTimeOnly(25 * 60 * 1000),
+    timestamp: formatIso(25 * 60 * 1000), // 25 mins ago
     payload: '{\n  "body": "<script>alert(1)</script>"\n}',
     userAgent: 'Mozilla/5.0',
     contentType: 'application/json',
@@ -97,7 +159,8 @@ const mockEvents: PrototypeEvent[] = [
     rule: 'traversal.encoded',
     method: 'GET',
     path: '/api/v1/reports',
-    time: '12:58:10',
+    time: formatTimeOnly(45 * 60 * 1000),
+    timestamp: formatIso(45 * 60 * 1000), // 45 mins ago
     payload: '{\n  "file": "%2e%2e%2fconfig"\n}',
     userAgent: 'python-requests/2.31',
     contentType: 'application/json',
@@ -110,7 +173,8 @@ const mockEvents: PrototypeEvent[] = [
     rule: 'xss.event-handler',
     method: 'POST',
     path: '/api/v1/profile',
-    time: '12:40:55',
+    time: formatTimeOnly(2 * 60 * 60 * 1000),
+    timestamp: formatIso(2 * 60 * 60 * 1000), // 2 hours ago
     payload: '{\n  "bio": "<img src=x onerror=alert(1)>"\n}',
     userAgent: 'Mozilla/5.0',
     contentType: 'application/json',
@@ -123,7 +187,8 @@ const mockEvents: PrototypeEvent[] = [
     rule: 'sqli.union',
     method: 'POST',
     path: '/api/v1/search',
-    time: '12:31:20',
+    time: formatTimeOnly(4 * 60 * 60 * 1000),
+    timestamp: formatIso(4 * 60 * 60 * 1000), // 4 hours ago
     payload: '{\n  "q": "1 UNION SELECT null,version()"\n}',
     userAgent: 'sqlmap/1.6.4',
     contentType: 'application/json',
@@ -136,7 +201,8 @@ const mockEvents: PrototypeEvent[] = [
     rule: 'xss.svg-onload',
     method: 'POST',
     path: '/api/v1/comments',
-    time: '12:22:03',
+    time: formatTimeOnly(18 * 60 * 60 * 1000),
+    timestamp: formatIso(18 * 60 * 60 * 1000), // 18 hours ago
     payload: '{\n  "body": "<svg onload=alert(1)>"\n}',
     userAgent: 'Mozilla/5.0',
     contentType: 'application/json',
@@ -149,7 +215,8 @@ const mockEvents: PrototypeEvent[] = [
     rule: 'traversal.dotdot',
     method: 'GET',
     path: '/api/v1/files/download',
-    time: '12:10:47',
+    time: formatTimeOnly(48 * 60 * 60 * 1000),
+    timestamp: formatIso(48 * 60 * 60 * 1000), // 2 days ago
     payload: '{\n  "path": "../../app/.env"\n}',
     userAgent: 'curl/8.4.0',
     contentType: 'application/json',
@@ -158,43 +225,58 @@ const mockEvents: PrototypeEvent[] = [
   }
 ];
 
-// Prototype Jailed IPs
-interface PrototypeJailItem {
-  ip: string;
-  timeRemaining: string;
-  pct: number;
-  trigger: string;
-  lastRequest: string;
-}
-
-const mockJailData: PrototypeJailItem[] = [
-  { ip: '198.51.100.42', timeRemaining: '8m 05s', pct: 80, trigger: 'Rate limit', lastRequest: 'POST /oauth/token' },
-  { ip: '203.0.113.19', timeRemaining: '3m 30s', pct: 35, trigger: 'Rate limit', lastRequest: 'GET /api/v1/invoices' },
-  { ip: '91.198.174.3', timeRemaining: '6m 40s', pct: 65, trigger: 'Signature rule', lastRequest: 'POST /api/v1/auth/login' },
-  { ip: '185.220.101.9', timeRemaining: '1m 12s', pct: 12, trigger: 'Rate limit', lastRequest: 'GET /api/v1/customers' },
-  { ip: '45.227.254.40', timeRemaining: '9m 10s', pct: 92, trigger: 'Signature rule', lastRequest: 'GET /api/v1/files/download' },
-  { ip: '192.0.2.88', timeRemaining: '5m 25s', pct: 54, trigger: 'Rate limit', lastRequest: 'POST /api/v1/search' }
-];
+const mapThreatRecordToPrototypeEvent = (t: ThreatRecord, idx: number): PrototypeEvent => {
+  const timePart = t.timestamp ? t.timestamp.split('T')[1]?.slice(0, 8) || '13:00:00' : '13:00:00';
+  const sev =
+    t.severity === 'CRITICAL' ? 'Critical' :
+    t.severity === 'HIGH' ? 'High' :
+    t.severity === 'MEDIUM' ? 'Medium' :
+    t.severity === 'LOW' ? 'Low' : 'Medium';
+  return {
+    severity: sev,
+    code: t._id ? 'EV-' + t._id.slice(-5) : `EV-1049${idx}`,
+    rule: t.attackVector ? t.attackVector.toLowerCase().replace(/\s+/g, '.') : 'sqli.tautology',
+    method: t.method || 'POST',
+    path: t.endpoint || '/api/v1/auth/login',
+    time: timePart,
+    timestamp: t.timestamp || new Date().toISOString(),
+    payload: t.rawBody || '{\n  "threat": "detected"\n}',
+    userAgent: 'curl/8.4.0',
+    contentType: 'application/json',
+    ip: t.clientIp || '192.168.1.1',
+    attackType: t.attackVector || 'Security violation'
+  };
+};
 
 export default function Dashboard() {
-  const { token, activeProjectId, setActiveProject, logout } = useAuth();
+  const { token, activeProjectId, setActiveProject, logout, isLoading } = useAuth();
   const navigate = useNavigate();
   const { showToast } = useToast();
 
   // Navigation tab: 0: Analytics, 1: Provisioning, 2: Settings, 3: DLQ
   const [activeTab, setActiveTab] = useState<number>(0);
 
-  // Projects State
-  const [projects, setProjects] = useState<Project[]>([]);
+  // Projects State - Synchronously hydrated from localStorage if available
+  const [projects, setProjects] = useState<Project[]>(() => {
+    if (!token) return MOCK_PROJECTS;
+    try {
+      const saved = localStorage.getItem('aegis_projects');
+      return saved ? JSON.parse(saved) : [];
+    } catch {
+      return [];
+    }
+  });
+
   const [projectMenuOpen, setProjectMenuOpen] = useState(false);
   const [sampleBannerVisible, setSampleBannerVisible] = useState(true);
+  const projectMenuRef = useRef<HTMLDivElement>(null);
 
-  // Telemetry Hook
+  // Telemetry Hook (Only polls if token is present)
   const { threats, stats, refetch } = useThreatTelemetry(activeProjectId, token);
 
   // Jailed IPs State
-  const [jailedList, setJailedList] = useState<PrototypeJailItem[]>(mockJailData);
-  const [expandedIps, setExpandedIps] = useState<Record<string, boolean>>({ '198.51.100.42': true });
+  const [jailedList, setJailedList] = useState<PrototypeJailItem[]>(() => (token ? [] : MOCK_JAILED_IPS));
+  const [expandedIps, setExpandedIps] = useState<Record<string, boolean>>({});
   const [unbanModalIp, setUnbanModalIp] = useState<string | null>(null);
 
   // Circuit Breakers State
@@ -202,18 +284,42 @@ export default function Dashboard() {
 
   // Threat Stream Filters & Selected Event
   const [threatFilter, setThreatFilter] = useState<string>('All');
-  const [selectedThreatIndex, setSelectedThreatIndex] = useState<number>(0);
+  const [timeWindow, setTimeWindow] = useState<TimeWindow>('1h');
+  const [timeMenuOpen, setTimeMenuOpen] = useState<boolean>(false);
+  const timeMenuRef = useRef<HTMLDivElement>(null);
+
+  // Bug 2 fix: Explicit selection and inspector drawer open/closed state
+  const [selectedThreatIndex, setSelectedThreatIndex] = useState<number | null>(0);
+  const [isInspectorOpen, setIsInspectorOpen] = useState<boolean>(true);
   const [headersAccordionOpen, setHeadersAccordionOpen] = useState(false);
 
-  // Load Projects
+  // Close menus on click outside
+  useEffect(() => {
+    if (!timeMenuOpen) return;
+    const handleClickOutside = (e: MouseEvent) => {
+      if (timeMenuRef.current && !timeMenuRef.current.contains(e.target as Node)) {
+        setTimeMenuOpen(false);
+      }
+    };
+    document.addEventListener('mousedown', handleClickOutside);
+    return () => document.removeEventListener('mousedown', handleClickOutside);
+  }, [timeMenuOpen]);
+
+  useEffect(() => {
+    if (!projectMenuOpen) return;
+    const handleClickOutside = (e: MouseEvent) => {
+      if (projectMenuRef.current && !projectMenuRef.current.contains(e.target as Node)) {
+        setProjectMenuOpen(false);
+      }
+    };
+    document.addEventListener('mousedown', handleClickOutside);
+    return () => document.removeEventListener('mousedown', handleClickOutside);
+  }, [projectMenuOpen]);
+
+  // Load Projects (Auth-aware, persists to localStorage to prevent reload context loss)
   useEffect(() => {
     if (!token) {
-      // In offline preview mode, ensure default mock project list is present
-      setProjects([
-        { _id: 'proj_smartbill', projectName: 'SmartBill AI', apiKey: 'ag_live_1', dryRun: false, enableLLMAudit: true, slackWebhookUrl: '', discordWebhookUrl: '' },
-        { _id: 'proj_pregatrack', projectName: 'PregaTrack', apiKey: 'ag_live_2', dryRun: false, enableLLMAudit: true, slackWebhookUrl: '', discordWebhookUrl: '' },
-        { _id: 'proj_payments', projectName: 'payments-api', apiKey: 'ag_live_3', dryRun: false, enableLLMAudit: true, slackWebhookUrl: '', discordWebhookUrl: '' }
-      ]);
+      setProjects(MOCK_PROJECTS);
       return;
     }
 
@@ -222,16 +328,36 @@ export default function Dashboard() {
         const data = await fetchProjects(token);
         if (data && data.length > 0) {
           setProjects(data);
-          if (!activeProjectId) {
+          try {
+            localStorage.setItem('aegis_projects', JSON.stringify(data));
+          } catch {
+            // ignore storage quota errors
+          }
+          if (!activeProjectId || !data.some((p) => p._id === activeProjectId)) {
             setActiveProject(data[0]._id);
           }
         } else {
-          setProjects([
-            { _id: 'proj_payments', projectName: 'payments-api', apiKey: 'ag_live_3', dryRun: false, enableLLMAudit: true, slackWebhookUrl: '', discordWebhookUrl: '' }
-          ]);
+          // Empty project list from backend
+          setProjects([]);
+          localStorage.removeItem('aegis_projects');
+          setActiveProject(null);
         }
       } catch {
-        // Fallback
+        // On network error or offline mode, retain any cached projects
+        try {
+          const saved = localStorage.getItem('aegis_projects');
+          if (saved) {
+            const parsed = JSON.parse(saved);
+            if (parsed.length > 0) {
+              setProjects(parsed);
+              if (!activeProjectId) {
+                setActiveProject(parsed[0]._id);
+              }
+            }
+          }
+        } catch {
+          // retain state
+        }
       }
     };
     loadProjects();
@@ -245,30 +371,68 @@ export default function Dashboard() {
         fetchCircuitBreakers(token || undefined)
       ]);
 
-      if (ips && ips.length > 0) {
-        setJailedList(
-          ips.map((item) => {
-            const ttlSec = item.ttl || 300;
-            const mins = Math.floor(ttlSec / 60);
-            const secs = ttlSec % 60;
-            const timeRemaining = `${mins}m ${secs < 10 ? '0' : ''}${secs}s`;
-            const pct = Math.min(100, Math.round((ttlSec / 600) * 100));
-            return {
-              ip: item.ip,
-              timeRemaining,
-              pct,
-              trigger: 'Signature rule',
-              lastRequest: 'POST /api/v1/auth/login'
-            };
-          })
-        );
-      }
+      if (token) {
+        // Authenticated: Strict live data mapping
+        if (ips) {
+          setJailedList(
+            ips.map((item) => {
+              const ttlSec = item.ttl || 300;
+              const mins = Math.floor(ttlSec / 60);
+              const secs = ttlSec % 60;
+              const timeRemaining = `${mins}m ${secs < 10 ? '0' : ''}${secs}s`;
+              const pct = Math.min(100, Math.round((ttlSec / 600) * 100));
+              return {
+                ip: item.ip,
+                timeRemaining,
+                pct,
+                trigger: 'Rate limit / Signature rule',
+                lastRequest: 'Blocked at edge'
+              };
+            })
+          );
+        } else {
+          setJailedList([]);
+        }
 
-      if (breakers && breakers.length > 0) {
-        setCircuitBreakers(breakers);
+        if (breakers) {
+          setCircuitBreakers(breakers);
+        } else {
+          setCircuitBreakers([]);
+        }
+      } else {
+        // Unauthenticated preview / demo mode
+        if (ips && ips.length > 0) {
+          setJailedList(
+            ips.map((item) => {
+              const ttlSec = item.ttl || 300;
+              const mins = Math.floor(ttlSec / 60);
+              const secs = ttlSec % 60;
+              const timeRemaining = `${mins}m ${secs < 10 ? '0' : ''}${secs}s`;
+              const pct = Math.min(100, Math.round((ttlSec / 600) * 100));
+              return {
+                ip: item.ip,
+                timeRemaining,
+                pct,
+                trigger: 'Signature rule',
+                lastRequest: 'POST /api/v1/auth/login'
+              };
+            })
+          );
+        } else {
+          setJailedList(MOCK_JAILED_IPS);
+        }
+
+        if (breakers && breakers.length > 0) {
+          setCircuitBreakers(breakers);
+        } else {
+          setCircuitBreakers(MOCK_CIRCUIT_BREAKERS);
+        }
       }
     } catch {
-      // Keep fallbacks
+      if (token) {
+        setJailedList([]);
+        setCircuitBreakers([]);
+      }
     }
   };
 
@@ -278,11 +442,24 @@ export default function Dashboard() {
     return () => clearInterval(timer);
   }, [token]);
 
+  // Prevent premature render or unauthenticated route kick during hydration check
+  if (isLoading) {
+    return (
+      <div style={{ minHeight: '100vh', display: 'flex', alignItems: 'center', justifyContent: 'center', background: 'var(--bg)' }}>
+        <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '16px' }}>
+          <span style={{ color: 'var(--ac)', display: 'inline-flex' }}>
+            <ShieldIcon size={32} />
+          </span>
+          <div style={{ color: 'var(--t2)', fontSize: '13px', fontWeight: 500 }}>Initializing session...</div>
+        </div>
+      </div>
+    );
+  }
+
   // Determine Active Project
-  const activeProject =
-    projects.find((p) => p._id === activeProjectId) ||
-    projects[0] ||
-    ({ _id: '6ab6b48a79e7eaec68377b1b', projectName: 'payments-api' } as Project);
+  const activeProject = token
+    ? (projects.find((p) => p._id === activeProjectId) || projects[0] || null)
+    : (projects.find((p) => p._id === activeProjectId) || projects[0] || null);
 
   // Unban Action
   const handleConfirmUnban = async () => {
@@ -311,131 +488,154 @@ export default function Dashboard() {
     showToast('Telemetry flushed');
   };
 
-  // Prepare Threats list: live or fallback
-  const mappedThreats: PrototypeEvent[] =
-    threats && threats.length > 0
-      ? threats.map((t: ThreatRecord, idx: number) => {
-          const timePart = t.timestamp ? t.timestamp.split('T')[1]?.slice(0, 8) || '13:00:00' : '13:00:00';
-          const sev =
-            t.severity === 'CRITICAL' ? 'Critical' :
-            t.severity === 'HIGH' ? 'High' :
-            t.severity === 'MEDIUM' ? 'Medium' :
-            t.severity === 'LOW' ? 'Low' : 'Medium';
-          return {
-            severity: sev,
-            code: t._id ? 'EV-' + t._id.slice(-5) : `EV-1049${idx}`,
-            rule: t.attackVector ? t.attackVector.toLowerCase().replace(/\s+/g, '.') : 'sqli.tautology',
-            method: t.method || 'POST',
-            path: t.endpoint || '/api/v1/auth/login',
-            time: timePart,
-            payload: t.rawBody || '{\n  "threat": "detected"\n}',
-            userAgent: 'curl/8.4.0',
-            contentType: 'application/json',
-            ip: t.clientIp || '192.168.1.1',
-            attackType: t.attackVector || 'Security violation'
-          };
-        })
-      : mockEvents;
+  // Auth-aware data resolution:
+  // If authenticated: strictly live data, NO mock fallbacks
+  // If unauthenticated preview: mock fixtures
+  const displayJailedList: PrototypeJailItem[] = token ? jailedList : (jailedList.length > 0 ? jailedList : MOCK_JAILED_IPS);
+  const displayCircuitBreakers: CircuitBreakerRecord[] = token ? circuitBreakers : (circuitBreakers.length > 0 ? circuitBreakers : MOCK_CIRCUIT_BREAKERS);
 
-  // Filtered Threats
-  const filteredThreats = mappedThreats.filter(
-    (ev) => threatFilter === 'All' || ev.severity.toLowerCase() === threatFilter.toLowerCase()
-  );
+  const displayThreats: PrototypeEvent[] = token
+    ? (threats && threats.length > 0 ? threats.map(mapThreatRecordToPrototypeEvent) : [])
+    : (threats && threats.length > 0 ? threats.map(mapThreatRecordToPrototypeEvent) : MOCK_THREATS);
 
+  // Time Window Filtering (Bug 4)
+  const selectedWindowObj = TIME_WINDOWS.find((w) => w.id === timeWindow) || TIME_WINDOWS[1];
+  const cutoff = Date.now() - selectedWindowObj.durationMs;
+
+  const filteredThreats = displayThreats.filter((ev) => {
+    const matchesSeverity = threatFilter === 'All' || ev.severity.toLowerCase() === threatFilter.toLowerCase();
+    if (!matchesSeverity) return false;
+
+    const eventTime = new Date(ev.timestamp).getTime();
+    if (!isNaN(eventTime)) {
+      return eventTime >= cutoff;
+    }
+    return true;
+  });
+
+  // Bug 2 fix: Selected Event is null when drawer is closed or no valid event is selected
   const selectedEvent =
-    selectedThreatIndex >= 0 && selectedThreatIndex < filteredThreats.length
+    isInspectorOpen &&
+    selectedThreatIndex !== null &&
+    selectedThreatIndex >= 0 &&
+    selectedThreatIndex < filteredThreats.length
       ? filteredThreats[selectedThreatIndex]
-      : (filteredThreats[0] || null);
+      : null;
 
   // Stats KPIs calculation
-  const totalBlockedCount = stats?.totalBlocks || mappedThreats.length || 148;
-  const criticalThreatCount =
-    stats?.criticalCount ||
-    mappedThreats.filter((m) => m.severity.toLowerCase() === 'critical').length ||
-    42;
-  const tripwireCount =
-    mappedThreats.filter((m) => m.rule.includes('blocked') || m.rule.includes('sqli') || m.rule.includes('traversal')).length || 65;
+  const totalBlockedCount = token
+    ? (stats?.totalBlocks ?? 0)
+    : (stats?.totalBlocks || displayThreats.length || MOCK_METRICS.totalBlocks);
+
+  const criticalThreatCount = token
+    ? (stats?.criticalCount ?? 0)
+    : (stats?.criticalCount || displayThreats.filter((m) => m.severity.toLowerCase() === 'critical').length || MOCK_METRICS.criticalCount);
+
+  const tripwireCount = token
+    ? (displayThreats.filter((m) => m.rule.includes('blocked') || m.rule.includes('sqli') || m.rule.includes('traversal')).length)
+    : (displayThreats.filter((m) => m.rule.includes('blocked') || m.rule.includes('sqli') || m.rule.includes('traversal')).length || MOCK_METRICS.tripwireCount);
+
+  const navTabs = [
+    { id: 0, label: 'Analytics console' },
+    { id: 1, label: 'Tenant provisioning' },
+    { id: 2, label: 'Project settings' },
+    { id: 3, label: 'DLQ monitor' }
+  ];
 
   return (
     <div className="app">
-      {/* STEP 2: APP HEADER (56px high) */}
-      <div className="hd">
-        <span style={{ color: 'var(--ac)', display: 'flex' }}>
-          <ShieldIcon size={20} />
-        </span>
-        <b>AegisGate</b>
-        <span className="dv"></span>
-
-        {/* Project Selector Button */}
-        <button
-          className="sc sm"
-          style={{ display: 'flex', gap: '6px', alignItems: 'center' }}
-          onClick={() => setProjectMenuOpen(!projectMenuOpen)}
-        >
-          Project: {activeProject.projectName} <CaretDownIcon size={14} />
-        </button>
-
-        {/* Project Dropdown Floating Menu */}
-        {projectMenuOpen && (
-          <div className="menu">
-            {projects.map((p) => {
-              const isActive = p._id === activeProject._id;
-              return (
-                <div
-                  key={p._id}
-                  onClick={() => {
-                    setActiveProject(p._id);
-                    setProjectMenuOpen(false);
-                  }}
-                >
-                  <span>{p.projectName}</span>
-                  {isActive && <CheckIcon size={14} />}
-                </div>
-              );
-            })}
-          </div>
-        )}
-
-        {/* Right Header Navigation Items */}
-        <div className="sp">
-          <span className="p" style={{ ['--c' as any]: 'var(--ok)' }}>
-            <i></i>Gateway online
+      {/* HEADER SECTION (Unified block with single bottom border) */}
+      <header>
+        {/* Top Brand & Context Row (56px high, NO bottom border) */}
+        <div className="hd">
+          <span style={{ color: 'var(--ac)', display: 'flex' }}>
+            <ShieldIcon size={20} />
           </span>
-          {token ? (
+          <b>AegisGate</b>
+          <span className="dv"></span>
+
+          {/* Project Selector Button */}
+          <div ref={projectMenuRef} style={{ position: 'relative' }}>
             <button
               className="sc sm"
-              onClick={() => {
-                logout();
-                showToast('Logged out');
-              }}
+              style={{ display: 'flex', gap: '6px', alignItems: 'center' }}
+              onClick={() => setProjectMenuOpen(!projectMenuOpen)}
             >
-              Log out
+              Project: {activeProject ? activeProject.projectName : (token ? 'No projects' : 'payments-api')}{' '}
+              <CaretDownIcon size={14} />
             </button>
-          ) : (
-            <button className="pr sm" onClick={() => navigate('/auth')}>
-              Sign in
-            </button>
-          )}
+
+            {/* Project Dropdown Floating Menu */}
+            {projectMenuOpen && (
+              <div className="menu" style={{ position: 'absolute', top: '38px', left: 0 }}>
+                {projects.length > 0 ? (
+                  projects.map((p) => {
+                    const isActive = activeProject && p._id === activeProject._id;
+                    return (
+                      <div
+                        key={p._id}
+                        onClick={() => {
+                          setActiveProject(p._id);
+                          setProjectMenuOpen(false);
+                        }}
+                      >
+                        <span>{p.projectName}</span>
+                        {isActive && <CheckIcon size={14} />}
+                      </div>
+                    );
+                  })
+                ) : (
+                  <div style={{ color: 'var(--t3)', padding: '8px 12px', cursor: 'default' }}>
+                    No projects provisioned
+                  </div>
+                )}
+              </div>
+            )}
+          </div>
+
+          {/* Right Header Navigation Items */}
+          <div className="sp">
+            <span className="p" style={{ ['--c' as any]: 'var(--ok)' }}>
+              <i></i>Gateway online
+            </span>
+            {token ? (
+              <button
+                className="sc sm"
+                onClick={() => {
+                  logout();
+                  showToast('Logged out');
+                }}
+              >
+                Log out
+              </button>
+            ) : (
+              <button className="pr sm" onClick={() => navigate('/auth')}>
+                Sign in
+              </button>
+            )}
+          </div>
         </div>
-      </div>
 
-      {/* STEP 2: NAVIGATION TABS (44px high) */}
-      <div className="tabs">
-        <a className={activeTab === 0 ? 'on' : ''} onClick={() => setActiveTab(0)}>
-          Analytics console
-        </a>
-        <a className={activeTab === 1 ? 'on' : ''} onClick={() => setActiveTab(1)}>
-          Tenant provisioning
-        </a>
-        <a className={activeTab === 2 ? 'on' : ''} onClick={() => setActiveTab(2)}>
-          Project settings
-        </a>
-        <a className={activeTab === 3 ? 'on' : ''} onClick={() => setActiveTab(3)}>
-          DLQ monitor
-        </a>
-      </div>
+        {/* Sub-Navigation Tabs Row (48px high with single unified bottom border) */}
+        <nav className="tabs">
+          {navTabs.map((tab) => {
+            const isActive = activeTab === tab.id;
+            return (
+              <button
+                key={tab.id}
+                type="button"
+                onClick={() => setActiveTab(tab.id)}
+                className={isActive ? 'on' : ''}
+              >
+                {tab.label}
+                {isActive && <span className="tab-indicator" />}
+              </button>
+            );
+          })}
+        </nav>
+      </header>
 
-      {/* Sample Data Banner when not logged in or in simulation mode */}
+      {/* Sample Data Banner when not logged in */}
       {!token && sampleBannerVisible && activeTab === 0 && (
         <div className="bn">
           Showing sample data.{' '}
@@ -467,7 +667,7 @@ export default function Dashboard() {
               </div>
               <div style={{ fontSize: '32px', fontWeight: 600 }}>{totalBlockedCount}</div>
               <div className="cap" style={{ whiteSpace: 'nowrap' }}>
-                up 12.4% vs previous 24h
+                {token ? 'Cumulative recorded events' : 'up 12.4% vs previous 24h'}
               </div>
             </div>
 
@@ -520,14 +720,14 @@ export default function Dashboard() {
             </div>
           </div>
 
-          {/* Row 2 — Jailed IPs (60%) & Upstream Circuit Breakers (40%) */}
-          <div className="row" style={{ gridTemplateColumns: '3fr 2fr' }}>
-            {/* Jailed IPs Card */}
-            <div className="card">
+          {/* Row 2 — Jailed IPs (60%) & Upstream Circuit Breakers (40%) with items-start alignment (Bug 3) */}
+          <div className="row" style={{ gridTemplateColumns: '3fr 2fr', alignItems: 'start' }}>
+            {/* Jailed IPs Card - Constrained max height and structural min-height */}
+            <div className="card" style={{ minHeight: '440px', display: 'flex', flexDirection: 'column' }}>
               <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '12px' }}>
                 <span className="ct">Jailed IPs</span>
                 <span className="p" style={{ ['--c' as any]: 'var(--low)' }}>
-                  {jailedList.length} banned
+                  {displayJailedList.length} banned
                 </span>
               </div>
 
@@ -539,176 +739,127 @@ export default function Dashboard() {
                 <span>Action</span>
               </div>
 
-              {jailedList.map((r) => {
-                const isExpanded = !!expandedIps[r.ip];
-                return (
-                  <div key={r.ip}>
-                    <div className="tr" style={{ gridTemplateColumns: '24px 1fr 1.3fr 90px 80px' }}>
-                      <span
-                        style={{
-                          cursor: 'pointer',
-                          color: 'var(--t3)',
-                          display: 'inline-flex',
-                          transform: `rotate(${isExpanded ? 90 : 0}deg)`,
-                          transition: 'transform 0.15s ease'
-                        }}
-                        onClick={() =>
-                          setExpandedIps((prev) => ({ ...prev, [r.ip]: !prev[r.ip] }))
-                        }
-                      >
-                        <ChevronRightIcon size={14} />
-                      </span>
-                      <span className="mono">{r.ip}</span>
-                      <span style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
-                        <span style={{ width: '56px' }}>{r.timeRemaining}</span>
-                        <span className="bar" style={{ flex: 1 }}>
-                          <div style={{ width: `${r.pct}%` }}></div>
-                        </span>
-                      </span>
-                      <span className="p" style={{ ['--c' as any]: 'var(--low)' }}>
-                        Blocked
-                      </span>
-                      <button
-                        type="button"
-                        className="sc sm"
-                        onClick={() => setUnbanModalIp(r.ip)}
-                      >
-                        Unban
-                      </button>
-                    </div>
+              {/* Scrollable container capped at max-h-[380px] */}
+              <div style={{ maxHeight: '380px', overflowY: 'auto' }}>
+                {displayJailedList.length > 0 ? (
+                  displayJailedList.map((r) => {
+                    const isExpanded = !!expandedIps[r.ip];
+                    return (
+                      <div key={r.ip}>
+                        <div className="tr" style={{ gridTemplateColumns: '24px 1fr 1.3fr 90px 80px' }}>
+                          <span
+                            style={{
+                              cursor: 'pointer',
+                              color: 'var(--t3)',
+                              display: 'inline-flex',
+                              transform: `rotate(${isExpanded ? 90 : 0}deg)`,
+                              transition: 'transform 0.15s ease'
+                            }}
+                            onClick={() =>
+                              setExpandedIps((prev) => ({ ...prev, [r.ip]: !prev[r.ip] }))
+                            }
+                          >
+                            <ChevronRightIcon size={14} />
+                          </span>
+                          <span className="mono">{r.ip}</span>
+                          <span style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
+                            <span style={{ width: '56px' }}>{r.timeRemaining}</span>
+                            <span className="bar" style={{ flex: 1 }}>
+                              <div style={{ width: `${r.pct}%` }}></div>
+                            </span>
+                          </span>
+                          <span className="p" style={{ ['--c' as any]: 'var(--low)' }}>
+                            Blocked
+                          </span>
+                          <button
+                            type="button"
+                            className="sc sm"
+                            onClick={() => setUnbanModalIp(r.ip)}
+                          >
+                            Unban
+                          </button>
+                        </div>
 
-                    {isExpanded && (
-                      <div className="in" style={{ margin: '8px 0 8px 32px', display: 'flex', gap: '32px', whiteSpace: 'nowrap' }}>
-                        <span>Triggered by: {r.trigger}</span>
-                        <span>
-                          Last request: <span className="mono">{r.lastRequest}</span>
-                        </span>
+                        {isExpanded && (
+                          <div className="in" style={{ margin: '8px 0 8px 32px', display: 'flex', gap: '32px', whiteSpace: 'nowrap' }}>
+                            <span>Triggered by: {r.trigger}</span>
+                            <span>
+                              Last request: <span className="mono">{r.lastRequest}</span>
+                            </span>
+                          </div>
+                        )}
                       </div>
-                    )}
+                    );
+                  })
+                ) : (
+                  <div style={{ padding: '48px 16px', textAlign: 'center', color: 'var(--t2)', fontSize: '13px' }}>
+                    No active IP bans at the edge.
                   </div>
-                );
-              })}
+                )}
+              </div>
 
-              <div className="cap" style={{ marginTop: '16px' }}>
+              <div className="cap" style={{ marginTop: 'auto', paddingTop: '16px' }}>
                 Jailed after 3 abuse points within 60 s. Ban lasts 10 minutes.
               </div>
             </div>
 
-            {/* Upstream Circuit Breakers Card */}
-            <div className="card" style={{ display: 'grid', gap: '16px', alignContent: 'start' }}>
-              <span className="ct">Upstream circuit breakers</span>
+            {/* Upstream Circuit Breakers Card - Constrained max height and structural min-height */}
+            <div className="card" style={{ minHeight: '440px', display: 'flex', flexDirection: 'column' }}>
+              <span className="ct" style={{ marginBottom: '16px' }}>Upstream circuit breakers</span>
 
-              {/* Render either live circuit breakers or fallback to prototype items */}
-              {circuitBreakers.length > 0 ? (
-                circuitBreakers.map((cb) => {
-                  const stateBadge =
-                    cb.state === 'CLOSED'
-                      ? { label: 'Closed', color: 'ok' }
-                      : cb.state === 'OPEN'
-                      ? { label: 'Open', color: 'crit' }
-                      : { label: 'Half-open', color: 'med' };
-                  return (
-                    <div key={cb.origin} className="in" style={{ display: 'grid', gap: '12px', padding: '16px' }}>
-                      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                        <span className="mono">{cb.origin}</span>
-                        <span className="p" style={{ ['--c' as any]: `var(--${stateBadge.color})` }}>
-                          {stateBadge.label}
-                        </span>
-                      </div>
-                      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: '8px' }}>
-                        <div style={{ background: 'var(--card)', borderRadius: '10px', padding: '8px 12px' }}>
-                          <div className="cap">In-flight</div>
-                          <div style={{ fontWeight: 500, whiteSpace: 'nowrap' }}>{cb.inFlight} / 100</div>
+              <div style={{ maxHeight: '380px', overflowY: 'auto', display: 'grid', gap: '12px' }}>
+                {displayCircuitBreakers.length > 0 ? (
+                  displayCircuitBreakers.map((cb) => {
+                    const stateBadge =
+                      cb.state === 'CLOSED'
+                        ? { label: 'Closed', color: 'ok' }
+                        : cb.state === 'OPEN'
+                        ? { label: 'Open', color: 'crit' }
+                        : { label: 'Half-open', color: 'med' };
+                    return (
+                      <div key={cb.origin} className="in" style={{ display: 'grid', gap: '12px', padding: '16px' }}>
+                        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                          <span className="mono">{cb.origin}</span>
+                          <span className="p" style={{ ['--c' as any]: `var(--${stateBadge.color})` }}>
+                            {stateBadge.label}
+                          </span>
                         </div>
-                        <div style={{ background: 'var(--card)', borderRadius: '10px', padding: '8px 12px' }}>
-                          <div className="cap">Failures</div>
-                          <div style={{ fontWeight: 500, whiteSpace: 'nowrap' }}>{cb.consecutiveFailures} / 5</div>
-                        </div>
-                        <div style={{ background: 'var(--card)', borderRadius: '10px', padding: '8px 12px' }}>
-                          <div className="cap">Cooldown</div>
-                          <div style={{ fontWeight: 500, whiteSpace: 'nowrap' }}>
-                            {cb.state === 'OPEN' ? 'Retry in 18 s' : cb.state === 'HALF_OPEN' ? 'Probing now' : '30 s probe'}
+                        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: '8px' }}>
+                          <div style={{ background: 'var(--card)', borderRadius: '10px', padding: '8px 12px' }}>
+                            <div className="cap">In-flight</div>
+                            <div style={{ fontWeight: 500, whiteSpace: 'nowrap' }}>{cb.inFlight} / 100</div>
+                          </div>
+                          <div style={{ background: 'var(--card)', borderRadius: '10px', padding: '8px 12px' }}>
+                            <div className="cap">Failures</div>
+                            <div style={{ fontWeight: 500, whiteSpace: 'nowrap' }}>{cb.consecutiveFailures} / 5</div>
+                          </div>
+                          <div style={{ background: 'var(--card)', borderRadius: '10px', padding: '8px 12px' }}>
+                            <div className="cap">Cooldown</div>
+                            <div style={{ fontWeight: 500, whiteSpace: 'nowrap' }}>
+                              {cb.state === 'OPEN' ? 'Retry in 18 s' : cb.state === 'HALF_OPEN' ? 'Probing now' : '30 s probe'}
+                            </div>
                           </div>
                         </div>
                       </div>
-                    </div>
-                  );
-                })
-              ) : (
-                <>
-                  <div className="in" style={{ display: 'grid', gap: '12px', padding: '16px' }}>
-                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                      <span className="mono">api.internal/payments</span>
-                      <span className="p" style={{ ['--c' as any]: 'var(--ok)' }}>Closed</span>
-                    </div>
-                    <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: '8px' }}>
-                      <div style={{ background: 'var(--card)', borderRadius: '10px', padding: '8px 12px' }}>
-                        <div className="cap">In-flight</div>
-                        <div style={{ fontWeight: 500, whiteSpace: 'nowrap' }}>0 / 100</div>
-                      </div>
-                      <div style={{ background: 'var(--card)', borderRadius: '10px', padding: '8px 12px' }}>
-                        <div className="cap">Failures</div>
-                        <div style={{ fontWeight: 500, whiteSpace: 'nowrap' }}>0 / 5</div>
-                      </div>
-                      <div style={{ background: 'var(--card)', borderRadius: '10px', padding: '8px 12px' }}>
-                        <div className="cap">Cooldown</div>
-                        <div style={{ fontWeight: 500, whiteSpace: 'nowrap' }}>30 s probe</div>
-                      </div>
-                    </div>
+                    );
+                  })
+                ) : (
+                  <div className="in" style={{ padding: '48px 16px', textAlign: 'center', color: 'var(--t2)', fontSize: '13px' }}>
+                    No active upstream circuit breakers monitored.
                   </div>
+                )}
+              </div>
 
-                  <div className="in" style={{ display: 'grid', gap: '12px', padding: '16px' }}>
-                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                      <span className="mono">api.internal/orders</span>
-                      <span className="p" style={{ ['--c' as any]: 'var(--crit)' }}>Open</span>
-                    </div>
-                    <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: '8px' }}>
-                      <div style={{ background: 'var(--card)', borderRadius: '10px', padding: '8px 12px' }}>
-                        <div className="cap">In-flight</div>
-                        <div style={{ fontWeight: 500, whiteSpace: 'nowrap' }}>0 / 100</div>
-                      </div>
-                      <div style={{ background: 'var(--card)', borderRadius: '10px', padding: '8px 12px' }}>
-                        <div className="cap">Failures</div>
-                        <div style={{ fontWeight: 500, whiteSpace: 'nowrap' }}>5 / 5</div>
-                      </div>
-                      <div style={{ background: 'var(--card)', borderRadius: '10px', padding: '8px 12px' }}>
-                        <div className="cap">Cooldown</div>
-                        <div style={{ fontWeight: 500, whiteSpace: 'nowrap' }}>Retry in 18 s</div>
-                      </div>
-                    </div>
-                  </div>
-
-                  <div className="in" style={{ display: 'grid', gap: '12px', padding: '16px' }}>
-                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                      <span className="mono">api.internal/inventory</span>
-                      <span className="p" style={{ ['--c' as any]: 'var(--med)' }}>Half-open</span>
-                    </div>
-                    <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: '8px' }}>
-                      <div style={{ background: 'var(--card)', borderRadius: '10px', padding: '8px 12px' }}>
-                        <div className="cap">In-flight</div>
-                        <div style={{ fontWeight: 500, whiteSpace: 'nowrap' }}>0 / 100</div>
-                      </div>
-                      <div style={{ background: 'var(--card)', borderRadius: '10px', padding: '8px 12px' }}>
-                        <div className="cap">Failures</div>
-                        <div style={{ fontWeight: 500, whiteSpace: 'nowrap' }}>5 / 5</div>
-                      </div>
-                      <div style={{ background: 'var(--card)', borderRadius: '10px', padding: '8px 12px' }}>
-                        <div className="cap">Cooldown</div>
-                        <div style={{ fontWeight: 500, whiteSpace: 'nowrap' }}>Probing now</div>
-                      </div>
-                    </div>
-                  </div>
-                </>
-              )}
-
-              <div className="cap">Bulkhead limit: 100 connections per upstream.</div>
+              <div className="cap" style={{ marginTop: 'auto', paddingTop: '16px' }}>
+                Bulkhead limit: 100 connections per upstream.
+              </div>
             </div>
           </div>
 
-          {/* Row 3 — Live Threat Stream (62%) & Payload Inspector (38%) */}
-          <div className="row" style={{ gridTemplateColumns: '62fr 38fr' }}>
+          {/* Row 3 — Live Threat Stream (62%) & Payload Inspector (38%) with items-start alignment (Bug 3) */}
+          <div className="row" style={{ gridTemplateColumns: '62fr 38fr', alignItems: 'start' }}>
             {/* Live Threat Stream Card */}
-            <div className="card">
+            <div className="card" style={{ minHeight: '520px', display: 'flex', flexDirection: 'column' }}>
               <div style={{ display: 'flex', alignItems: 'center', gap: '12px', marginBottom: '16px' }}>
                 <span className="ct">Live threat stream</span>
                 <span className="p" style={{ ['--c' as any]: 'var(--ok)' }}>
@@ -724,7 +875,7 @@ export default function Dashboard() {
                 </button>
               </div>
 
-              {/* Filter Chips */}
+              {/* Filter Chips & Time Window Selector (Bug 4) */}
               <div style={{ display: 'flex', gap: '8px', marginBottom: '12px', alignItems: 'center' }}>
                 {['All', 'Critical', 'High', 'Medium', 'Low'].map((c) => (
                   <button
@@ -739,13 +890,54 @@ export default function Dashboard() {
                     {c}
                   </button>
                 ))}
-                <button
-                  type="button"
-                  className="ch"
-                  style={{ marginLeft: 'auto', display: 'flex', alignItems: 'center', gap: '6px' }}
-                >
-                  Last 1h <CaretDownIcon size={14} />
-                </button>
+
+                {/* Interactive Time Window Selector Popover (Bug 4) */}
+                <div ref={timeMenuRef} style={{ marginLeft: 'auto', position: 'relative' }}>
+                  <button
+                    type="button"
+                    className={`ch ${timeMenuOpen ? 'on' : ''}`}
+                    style={{ display: 'flex', alignItems: 'center', gap: '6px' }}
+                    onClick={() => setTimeMenuOpen(!timeMenuOpen)}
+                    aria-haspopup="true"
+                    aria-expanded={timeMenuOpen}
+                  >
+                    {selectedWindowObj.label} <CaretDownIcon size={14} />
+                  </button>
+
+                  {timeMenuOpen && (
+                    <div
+                      className="menu"
+                      style={{
+                        position: 'absolute',
+                        top: '34px',
+                        right: 0,
+                        left: 'auto',
+                        width: '140px',
+                        zIndex: 50
+                      }}
+                    >
+                      {TIME_WINDOWS.map((w) => (
+                        <div
+                          key={w.id}
+                          onClick={() => {
+                            setTimeWindow(w.id);
+                            setTimeMenuOpen(false);
+                            setSelectedThreatIndex(0);
+                          }}
+                          style={{
+                            display: 'flex',
+                            justifyContent: 'space-between',
+                            alignItems: 'center',
+                            fontWeight: timeWindow === w.id ? 600 : 400
+                          }}
+                        >
+                          <span>{w.label}</span>
+                          {timeWindow === w.id && <CheckIcon size={14} />}
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </div>
               </div>
 
               {/* Table Header */}
@@ -757,36 +949,47 @@ export default function Dashboard() {
                 <span>Action</span>
               </div>
 
-              {/* Threat Rows */}
-              {filteredThreats.map((r, i) => {
-                const isSelected = selectedThreatIndex === i;
-                const colorKey = sevColor[r.severity] || 'low';
-                return (
-                  <div
-                    key={r.code + i}
-                    className={`tr ${isSelected ? 'sel' : ''}`}
-                    style={{ gridTemplateColumns: '90px 80px 130px 1fr 60px' }}
-                  >
-                    <span className="p" style={{ ['--c' as any]: `var(--${colorKey})` }}>
-                      {r.severity}
-                    </span>
-                    <span>{r.time}</span>
-                    <span className="mono">{r.ip}</span>
-                    <span>{r.attackType}</span>
-                    <button
-                      type="button"
-                      className="lk"
-                      onClick={() => setSelectedThreatIndex(i)}
-                    >
-                      Inspect
-                    </button>
+              {/* Scrollable Threat Rows Capped at 380px */}
+              <div style={{ maxHeight: '380px', overflowY: 'auto' }}>
+                {filteredThreats.length > 0 ? (
+                  filteredThreats.map((r, i) => {
+                    const isSelected = isInspectorOpen && selectedThreatIndex === i;
+                    const colorKey = sevColor[r.severity] || 'low';
+                    return (
+                      <div
+                        key={r.code + i}
+                        className={`tr ${isSelected ? 'sel' : ''}`}
+                        style={{ gridTemplateColumns: '90px 80px 130px 1fr 60px' }}
+                      >
+                        <span className="p" style={{ ['--c' as any]: `var(--${colorKey})` }}>
+                          {r.severity}
+                        </span>
+                        <span>{r.time}</span>
+                        <span className="mono">{r.ip}</span>
+                        <span>{r.attackType}</span>
+                        <button
+                          type="button"
+                          className="lk"
+                          onClick={() => {
+                            setSelectedThreatIndex(i);
+                            setIsInspectorOpen(true);
+                          }}
+                        >
+                          Inspect
+                        </button>
+                      </div>
+                    );
+                  })
+                ) : (
+                  <div style={{ padding: '48px 16px', textAlign: 'center', color: 'var(--t2)', fontSize: '13px' }}>
+                    No security tripwire events captured in this window.
                   </div>
-                );
-              })}
+                )}
+              </div>
 
-              <div className="cap" style={{ display: 'flex', justifyContent: 'space-between', marginTop: '16px' }}>
+              <div className="cap" style={{ display: 'flex', justifyContent: 'space-between', marginTop: 'auto', paddingTop: '16px' }}>
                 <span>
-                  Showing {filteredThreats.length} of 50 events -{' '}
+                  Showing {filteredThreats.length} of {displayThreats.length} events -{' '}
                   <button type="button" className="lk" onClick={() => setThreatFilter('All')}>
                     View all
                   </button>
@@ -795,19 +998,34 @@ export default function Dashboard() {
               </div>
             </div>
 
-            {/* Payload Inspector Card */}
-            <div className="card" style={{ alignSelf: 'start' }}>
+            {/* Payload Inspector Card (Bug 2 fix: Closes properly on X click) */}
+            <div className="card" style={{ minHeight: '520px', display: 'flex', flexDirection: 'column' }}>
               {selectedEvent ? (
-                <>
+                <div style={{ overflowY: 'auto', maxHeight: '460px' }}>
                   <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '16px', alignItems: 'center' }}>
                     <span className="ct">Payload inspector</span>
-                    <span
-                      style={{ cursor: 'pointer', color: 'var(--t3)', display: 'inline-flex' }}
-                      onClick={() => setSelectedThreatIndex(-1)}
-                      title="Clear selection"
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setIsInspectorOpen(false);
+                        setSelectedThreatIndex(null);
+                      }}
+                      style={{
+                        cursor: 'pointer',
+                        color: 'var(--t3)',
+                        background: 'none',
+                        border: 'none',
+                        padding: '4px',
+                        display: 'inline-flex',
+                        alignItems: 'center',
+                        justifyContent: 'center',
+                        borderRadius: '4px'
+                      }}
+                      aria-label="Close inspector"
+                      title="Close inspector"
                     >
                       <CloseIcon size={16} />
-                    </span>
+                    </button>
                   </div>
 
                   <div style={{ display: 'flex', gap: '8px', alignItems: 'center', marginBottom: '16px', whiteSpace: 'nowrap' }}>
@@ -833,7 +1051,7 @@ export default function Dashboard() {
                     </div>
                     <div className="kv">
                       <span style={{ color: 'var(--t3)' }}>Time</span>
-                      <span>2026-10-03 {selectedEvent.time} UTC</span>
+                      <span>{selectedEvent.timestamp ? selectedEvent.timestamp.replace('T', ' ').slice(0, 19) + ' UTC' : `2026-10-03 ${selectedEvent.time} UTC`}</span>
                     </div>
                     <div className="kv">
                       <span style={{ color: 'var(--t3)' }}>Action</span>
@@ -888,14 +1106,14 @@ export default function Dashboard() {
                       <div className="mono">Host api.internal</div>
                     </div>
                   )}
-                </>
+                </div>
               ) : (
-                <>
-                  <div className="ct" style={{ marginBottom: '16px' }}>Payload inspector</div>
-                  <div className="cap" style={{ padding: '40px 0', textAlign: 'center' }}>
+                <div style={{ margin: 'auto', textAlign: 'center', padding: '48px 0' }}>
+                  <div className="ct" style={{ marginBottom: '8px' }}>Payload inspector</div>
+                  <div className="cap">
                     Select an event to inspect its payload
                   </div>
-                </>
+                </div>
               )}
             </div>
           </div>
@@ -907,7 +1125,15 @@ export default function Dashboard() {
         <TenantProvisioning
           token={token}
           onProjectCreated={(newProj) => {
-            setProjects((prev) => [...prev, newProj]);
+            setProjects((prev) => {
+              const next = [...prev, newProj];
+              try {
+                localStorage.setItem('aegis_projects', JSON.stringify(next));
+              } catch {
+                // ignore
+              }
+              return next;
+            });
             setActiveProject(newProj._id);
             showToast('Project provisioned');
           }}
@@ -920,14 +1146,22 @@ export default function Dashboard() {
           activeProject={activeProject}
           token={token}
           onProjectUpdated={(updated) => {
-            setProjects((prev) => prev.map((p) => (p._id === updated._id ? updated : p)));
+            setProjects((prev) => {
+              const next = prev.map((p) => (p._id === updated._id ? updated : p));
+              try {
+                localStorage.setItem('aegis_projects', JSON.stringify(next));
+              } catch {
+                // ignore
+              }
+              return next;
+            });
           }}
         />
       )}
 
       {/* Screen 4: DLQ Monitor */}
       {activeTab === 3 && (
-        <DLQMonitor activeProjectId={activeProject._id} token={token} />
+        <DLQMonitor activeProjectId={activeProject?._id || null} token={token} />
       )}
 
       {/* FOOTER */}
@@ -935,7 +1169,7 @@ export default function Dashboard() {
         AegisGate v2.1.0
       </div>
 
-      {/* STEP 7: UNBAN CONFIRMATION MODAL OVERLAY */}
+      {/* UNBAN CONFIRMATION MODAL OVERLAY */}
       {unbanModalIp && (
         <div className="ov">
           <div className="card" style={{ width: '400px', display: 'grid', gap: '12px' }}>
