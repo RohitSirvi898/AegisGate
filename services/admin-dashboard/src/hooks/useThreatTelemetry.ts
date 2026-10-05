@@ -29,7 +29,7 @@ export interface PrototypeJailItem {
     lastRequest: string;
 }
 
-export type ConnectionStatus = 'connected' | 'rate_limited' | 'reconnecting';
+export type ConnectionStatus = 'connected' | 'online' | 'rate_limited' | 'reconnecting' | 'offline' | 'unauthenticated';
 
 export const formatJailedIps = (ips: JailedIpRecord[]): PrototypeJailItem[] => {
     return ips.map((item) => {
@@ -46,6 +46,26 @@ export const formatJailedIps = (ips: JailedIpRecord[]): PrototypeJailItem[] => {
             lastRequest: 'Blocked at edge'
         };
     });
+};
+
+export const getStoredToken = (): string | null => {
+    try {
+        if (typeof localStorage !== 'undefined') {
+            const t = localStorage.getItem('aegis_token');
+            if (t) return t;
+        }
+    } catch {
+        // ignore
+    }
+    try {
+        if (typeof sessionStorage !== 'undefined') {
+            const t = sessionStorage.getItem('aegis_token');
+            if (t) return t;
+        }
+    } catch {
+        // ignore
+    }
+    return null;
 };
 
 export const useThreatTelemetry = (activeProjectId: string | null, token: string | null) => {
@@ -69,21 +89,37 @@ export const useThreatTelemetry = (activeProjectId: string | null, token: string
 
         const poll = async () => {
             if (isFetching) return;
-            isFetching = true;
 
+            // 1. Pre-flight Auth Check: verify an auth token exists and that the user is authenticated
+            const currentToken = token || getStoredToken();
+            if (!currentToken) {
+                setConnectionStatus('unauthenticated');
+                setLoading(false);
+                return; // Skip poll completely if unauthenticated
+            }
+
+            // 2. Offline Check: skip poll cycle if client is disconnected
+            if (typeof navigator !== 'undefined' && !navigator.onLine) {
+                setConnectionStatus('offline');
+                setLoading(false);
+                return;
+            }
+
+            isFetching = true;
             let nextDelayMs = 5000;
+            let is401Unauthorized = false;
 
             try {
                 const telemetryPromise: Promise<TelemetryResponse | null> =
-                    activeProjectId && token
-                        ? fetchTelemetry(activeProjectId, token)
+                    activeProjectId
+                        ? fetchTelemetry(activeProjectId, currentToken)
                         : Promise.resolve(null);
 
                 const breakersPromise: Promise<CircuitBreakerRecord[]> =
-                    fetchCircuitBreakers(token || undefined);
+                    fetchCircuitBreakers(currentToken);
 
                 const jailedPromise: Promise<JailedIpRecord[]> =
-                    fetchJailedIps(token || undefined);
+                    fetchJailedIps(currentToken);
 
                 // Fetch telemetry, circuit breakers, and jailed IPs in a single bundled cycle via Promise.allSettled
                 const [telemetryResult, breakersResult, jailedResult] = await Promise.allSettled([
@@ -94,11 +130,34 @@ export const useThreatTelemetry = (activeProjectId: string | null, token: string
 
                 if (!isMounted) return;
 
-                // Check if any endpoint received a 429 Too Many Requests response
+                const results = [telemetryResult, breakersResult, jailedResult];
+
+                // 3. 401 Circuit Trip: Wrap polling network resolution in a 401 status check
+                for (const res of results) {
+                    if (res.status === 'rejected') {
+                        const reason = res.reason;
+                        if (reason?.status === 401 || reason?.message?.includes('401')) {
+                            is401Unauthorized = true;
+                            break;
+                        }
+                    }
+                }
+
+                if (is401Unauthorized) {
+                    if (timeoutId) {
+                        clearTimeout(timeoutId);
+                        timeoutId = null;
+                    }
+                    setConnectionStatus('unauthenticated');
+                    setError('Session expired or unauthorized (401). Please sign in.');
+                    // Stop future scheduled polls completely
+                    return;
+                }
+
+                // 4. Check if any endpoint received a 429 Too Many Requests response
                 let isRateLimited = false;
                 let retryAfterSec = 10;
 
-                const results = [telemetryResult, breakersResult, jailedResult];
                 for (const res of results) {
                     if (res.status === 'rejected') {
                         const reason = res.reason;
@@ -126,7 +185,7 @@ export const useThreatTelemetry = (activeProjectId: string | null, token: string
                     return;
                 }
 
-                // Process fulfilled responses
+                // 5. Process fulfilled responses
                 let anySuccess = false;
                 let anyFailure = false;
 
@@ -143,7 +202,6 @@ export const useThreatTelemetry = (activeProjectId: string | null, token: string
                     }
                 } else {
                     anyFailure = true;
-                    // Retain live data on error
                 }
 
                 if (breakersResult.status === 'fulfilled') {
@@ -151,7 +209,6 @@ export const useThreatTelemetry = (activeProjectId: string | null, token: string
                     anySuccess = true;
                 } else {
                     anyFailure = true;
-                    // Retain live data on error
                 }
 
                 if (jailedResult.status === 'fulfilled') {
@@ -159,7 +216,6 @@ export const useThreatTelemetry = (activeProjectId: string | null, token: string
                     anySuccess = true;
                 } else {
                     anyFailure = true;
-                    // Retain live data on error
                 }
 
                 if (anySuccess) {
@@ -169,26 +225,72 @@ export const useThreatTelemetry = (activeProjectId: string | null, token: string
                     setConnectionStatus('reconnecting');
                     setError('Reconnecting...');
                 }
-            } catch {
+            } catch (err: any) {
                 if (!isMounted) return;
+                if (err?.status === 401 || err?.message?.includes('401')) {
+                    is401Unauthorized = true;
+                    setConnectionStatus('unauthenticated');
+                    setError('Session expired or unauthorized (401). Please sign in.');
+                    return;
+                }
+                if (typeof navigator !== 'undefined' && !navigator.onLine) {
+                    setConnectionStatus('offline');
+                    return;
+                }
                 setConnectionStatus('reconnecting');
                 setError('Reconnecting...');
             } finally {
                 if (isMounted) {
                     setLoading(false);
                     isFetching = false;
-                    timeoutId = setTimeout(() => {
-                        poll();
-                    }, nextDelayMs);
+                    const isOffline = typeof navigator !== 'undefined' && !navigator.onLine;
+                    if (!isOffline && !is401Unauthorized) {
+                        timeoutId = setTimeout(() => {
+                            poll();
+                        }, nextDelayMs);
+                    }
                 }
             }
         };
 
-        // Run immediate initial fetch
+        // Network connectivity event handlers
+        const handleOnline = () => {
+            const currentToken = token || getStoredToken();
+            if (!currentToken) {
+                setConnectionStatus('unauthenticated');
+                return;
+            }
+            setConnectionStatus('connected');
+            setError(null);
+            if (timeoutId) {
+                clearTimeout(timeoutId);
+                timeoutId = null;
+            }
+            poll(); // Immediately refresh when connectivity returns
+        };
+
+        const handleOffline = () => {
+            setConnectionStatus('offline');
+            if (timeoutId) {
+                clearTimeout(timeoutId);
+                timeoutId = null;
+            }
+        };
+
+        if (typeof window !== 'undefined') {
+            window.addEventListener('online', handleOnline);
+            window.addEventListener('offline', handleOffline);
+        }
+
+        // Run initial pre-flight check and poll
         poll();
 
         return () => {
             isMounted = false;
+            if (typeof window !== 'undefined') {
+                window.removeEventListener('online', handleOnline);
+                window.removeEventListener('offline', handleOffline);
+            }
             if (timeoutId) {
                 clearTimeout(timeoutId);
                 timeoutId = null;

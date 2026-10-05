@@ -390,6 +390,42 @@ assert.equal(getTelemetryDroppedTotal(), 5, 'Exactly 5 oldest events must be dro
 
 console.log('✅ Pre-queue telemetry redaction and bounded buffer tests passed!');
 
+// --- TEST 7: Legacy Anomaly Engine Purge Verification ---
+console.log('\n--- TEST 7: Legacy Anomaly Engine Purge Verification ---');
+import * as fs from 'node:fs';
+import * as path from 'node:path';
+import { fileURLToPath } from 'node:url';
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
+const srcDir = path.resolve(__dirname, '..');
+
+function searchDirectory(dir: string, needle: string): string[] {
+    const matches: string[] = [];
+    const entries = fs.readdirSync(dir, { withFileTypes: true });
+    for (const entry of entries) {
+        const fullPath = path.join(dir, entry.name);
+        if (entry.isDirectory()) {
+            if (entry.name === '__tests__') continue;
+            matches.push(...searchDirectory(fullPath, needle));
+        } else if (entry.isFile() && (entry.name.endsWith('.ts') || entry.name.endsWith('.js'))) {
+            const content = fs.readFileSync(fullPath, 'utf8');
+            if (content.includes(needle)) {
+                matches.push(fullPath);
+            }
+        }
+    }
+    return matches;
+}
+
+const legacyHits = searchDirectory(srcDir, 'Telemetry Fail-Open Bypass');
+assert.equal(legacyHits.length, 0, `Expected 0 files containing 'Telemetry Fail-Open Bypass', found: ${legacyHits.join(', ')}`);
+
+const anomalyHits = searchDirectory(srcDir, 'AI_ANOMALY_ENGINE_URL');
+assert.equal(anomalyHits.length, 0, `Expected 0 files containing 'AI_ANOMALY_ENGINE_URL', found: ${anomalyHits.join(', ')}`);
+
+console.log('✅ Legacy anomaly engine code and fail-open bypass completely purged from gateway-core!');
+
 console.log('\n🎉 ALL PRD v2.1 HARDENING TESTS PASSED SUCCESSFULLY! 🎉\n');
 
 redisClient.disconnect(false);

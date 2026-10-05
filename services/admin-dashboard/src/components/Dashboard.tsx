@@ -519,7 +519,15 @@ export default function Dashboard() {
 
           {/* Right Header Navigation Items */}
           <div className="sp">
-            {connectionStatus === 'rate_limited' ? (
+            {connectionStatus === 'unauthenticated' ? (
+              <span className="p" style={{ ['--c' as any]: 'var(--crit)' }}>
+                <i></i>Auth required (session expired)
+              </span>
+            ) : connectionStatus === 'offline' ? (
+              <span className="p" style={{ ['--c' as any]: 'var(--crit)' }}>
+                <i></i>Offline (waiting for connection)
+              </span>
+            ) : connectionStatus === 'rate_limited' ? (
               <span className="p" style={{ ['--c' as any]: 'var(--hi)' }}>
                 <i></i>Sync paused (rate limited)
               </span>

@@ -1,4 +1,42 @@
-const baseURL = import.meta.env.VITE_API_BASE_URL || 'http://localhost:8080';
+const getEnvVar = (key: string): string | undefined => {
+    try {
+        if (typeof import.meta !== 'undefined' && (import.meta as any).env && (import.meta as any).env[key]) {
+            return (import.meta as any).env[key];
+        }
+    } catch {
+        // ignore
+    }
+    try {
+        const proc = (globalThis as any).process;
+        if (proc && proc.env && proc.env[key]) {
+            return proc.env[key];
+        }
+    } catch {
+        // ignore
+    }
+    return undefined;
+};
+
+const baseURL = getEnvVar('VITE_GATEWAY_URL') || getEnvVar('VITE_API_BASE_URL') || 'http://localhost:8080';
+
+export const getAuthHeader = (): Record<string, string> => {
+    let token: string | null = null;
+    try {
+        if (typeof localStorage !== 'undefined') {
+            token = localStorage.getItem('aegis_token');
+        }
+    } catch {
+        // ignore
+    }
+    try {
+        if (!token && typeof sessionStorage !== 'undefined') {
+            token = sessionStorage.getItem('aegis_token');
+        }
+    } catch {
+        // ignore
+    }
+    return token ? { Authorization: `Bearer ${token}` } : {};
+};
 
 export interface Project {
     _id: string;
@@ -49,11 +87,12 @@ export interface TelemetryResponse {
 /**
  * Fetches all registered tenant projects for the authenticated user.
  */
-export const fetchProjects = async (token: string): Promise<Project[]> => {
+export const fetchProjects = async (token?: string): Promise<Project[]> => {
     try {
         const response = await fetch(`${baseURL}/api/v1/projects`, {
             headers: {
-                'Authorization': `Bearer ${token}`
+                ...getAuthHeader(),
+                ...(token ? { Authorization: `Bearer ${token}` } : {})
             }
         });
         if (!response.ok) {
@@ -70,14 +109,15 @@ export const fetchProjects = async (token: string): Promise<Project[]> => {
  */
 export const createProject = async (
     params: { name?: string; projectName?: string },
-    token: string
+    token?: string
 ): Promise<Project> => {
     const projectName = (params.projectName || params.name || '').trim();
     const response = await fetch(`${baseURL}/api/v1/projects`, {
         method: 'POST',
         headers: {
             'Content-Type': 'application/json',
-            'Authorization': `Bearer ${token}`
+            ...getAuthHeader(),
+            ...(token ? { Authorization: `Bearer ${token}` } : {})
         },
         body: JSON.stringify({ projectName })
     });
@@ -96,13 +136,14 @@ export const createProject = async (
 export const updateProjectSettings = async (
     projectId: string,
     settings: Partial<Project>,
-    token: string
+    token?: string
 ): Promise<Project> => {
     const response = await fetch(`${baseURL}/api/v1/projects/${projectId}`, {
         method: 'PUT',
         headers: {
             'Content-Type': 'application/json',
-            'Authorization': `Bearer ${token}`
+            ...getAuthHeader(),
+            ...(token ? { Authorization: `Bearer ${token}` } : {})
         },
         body: JSON.stringify(settings)
     });
@@ -120,13 +161,14 @@ export const updateProjectSettings = async (
  */
 export const fetchDeadLetterLogs = async (
     projectId: string,
-    token: string
+    token?: string
 ): Promise<DeadLetterLog[]> => {
     try {
         const response = await fetch(`${baseURL}/api/v1/analytics/dlq`, {
             headers: {
                 'X-Project-Id': projectId,
-                'Authorization': `Bearer ${token}`
+                ...getAuthHeader(),
+                ...(token ? { Authorization: `Bearer ${token}` } : {})
             },
             signal: AbortSignal.timeout(3000)
         });
@@ -144,16 +186,38 @@ export const fetchDeadLetterLogs = async (
 };
 
 /**
+ * Fetches Dead-Letter Queue statistics.
+ */
+export const fetchDlqStats = async (projectId?: string, token?: string): Promise<{ count: number }> => {
+    const headers: Record<string, string> = {
+        ...getAuthHeader(),
+        ...(token ? { Authorization: `Bearer ${token}` } : {}),
+        ...(projectId ? { 'X-Project-Id': projectId } : {})
+    };
+    const response = await fetch(`${baseURL}/api/v1/analytics/dlq`, {
+        headers,
+        signal: AbortSignal.timeout(3000)
+    });
+    if (!response.ok) {
+        throw new ApiError(`Failed to fetch DLQ stats: ${response.status}`, response.status);
+    }
+    const data = await response.json();
+    const count = Array.isArray(data) ? data.length : (Array.isArray(data.logs) ? data.logs.length : 0);
+    return { count };
+};
+
+/**
  * Re-queues a dead-lettered poison message back into the primary AegisGate pipeline.
  */
 export const retryDeadLetterMessage = async (
     messageId: string,
-    token: string
+    token?: string
 ): Promise<void> => {
     const response = await fetch(`${baseURL}/api/v1/analytics/dlq/${messageId}/retry`, {
         method: 'POST',
         headers: {
-            'Authorization': `Bearer ${token}`
+            ...getAuthHeader(),
+            ...(token ? { Authorization: `Bearer ${token}` } : {})
         }
     });
 
@@ -168,12 +232,13 @@ export const retryDeadLetterMessage = async (
  */
 export const purgeDeadLetterMessage = async (
     messageId: string,
-    token: string
+    token?: string
 ): Promise<void> => {
     const response = await fetch(`${baseURL}/api/v1/analytics/dlq/${messageId}`, {
         method: 'DELETE',
         headers: {
-            'Authorization': `Bearer ${token}`
+            ...getAuthHeader(),
+            ...(token ? { Authorization: `Bearer ${token}` } : {})
         }
     });
 
@@ -208,10 +273,10 @@ const parseRetryAfter = (response: Response): number | undefined => {
  * Fetches all currently banned client IPs and their remaining TTLs from Gateway Core.
  */
 export const fetchJailedIps = async (token?: string): Promise<JailedIpRecord[]> => {
-    const headers: Record<string, string> = {};
-    if (token) {
-        headers['Authorization'] = `Bearer ${token}`;
-    }
+    const headers: Record<string, string> = {
+        ...getAuthHeader(),
+        ...(token ? { Authorization: `Bearer ${token}` } : {})
+    };
     const response = await fetch(`${baseURL}/api/v1/admin/jailed-ips`, {
         headers,
         signal: AbortSignal.timeout(3000)
@@ -228,11 +293,10 @@ export const fetchJailedIps = async (token?: string): Promise<JailedIpRecord[]> 
  */
 export const unbanClientIp = async (ip: string, token?: string): Promise<void> => {
     const headers: Record<string, string> = {
-        'Content-Type': 'application/json'
+        'Content-Type': 'application/json',
+        ...getAuthHeader(),
+        ...(token ? { Authorization: `Bearer ${token}` } : {})
     };
-    if (token) {
-        headers['Authorization'] = `Bearer ${token}`;
-    }
     const response = await fetch(`${baseURL}/api/v1/admin/unban`, {
         method: 'POST',
         headers,
@@ -248,10 +312,10 @@ export const unbanClientIp = async (ip: string, token?: string): Promise<void> =
  * Fetches active upstream circuit breaker states from Gateway Core.
  */
 export const fetchCircuitBreakers = async (token?: string): Promise<CircuitBreakerRecord[]> => {
-    const headers: Record<string, string> = {};
-    if (token) {
-        headers['Authorization'] = `Bearer ${token}`;
-    }
+    const headers: Record<string, string> = {
+        ...getAuthHeader(),
+        ...(token ? { Authorization: `Bearer ${token}` } : {})
+    };
     const response = await fetch(`${baseURL}/api/v1/admin/circuit-breakers`, {
         headers,
         signal: AbortSignal.timeout(3000)
@@ -266,12 +330,14 @@ export const fetchCircuitBreakers = async (token?: string): Promise<CircuitBreak
 /**
  * Fetches live telemetry data for a project.
  */
-export const fetchTelemetry = async (projectId: string, token: string): Promise<TelemetryResponse> => {
+export const fetchTelemetry = async (projectId: string, token?: string): Promise<TelemetryResponse> => {
+    const headers: Record<string, string> = {
+        'X-Project-Id': projectId,
+        ...getAuthHeader(),
+        ...(token ? { Authorization: `Bearer ${token}` } : {})
+    };
     const response = await fetch(`${baseURL}/api/v1/analytics/telemetry`, {
-        headers: {
-            'X-Project-Id': projectId,
-            'Authorization': `Bearer ${token}`
-        },
+        headers,
         signal: AbortSignal.timeout(3000)
     });
     if (!response.ok) {
@@ -329,8 +395,10 @@ export const getJailedIps = fetchJailedIps;
 export const unbanIp = unbanClientIp;
 export const getCircuitBreakers = fetchCircuitBreakers;
 export const getTelemetry = fetchTelemetry;
+export const getDlqStats = fetchDlqStats;
 
 export const api = {
+    getAuthHeader,
     getProjects,
     fetchProjects,
     createProject,
@@ -345,6 +413,8 @@ export const api = {
     getTelemetry,
     fetchTelemetry,
     fetchDeadLetterLogs,
+    fetchDlqStats,
+    getDlqStats,
     retryDeadLetterMessage,
     purgeDeadLetterMessage,
     login,
