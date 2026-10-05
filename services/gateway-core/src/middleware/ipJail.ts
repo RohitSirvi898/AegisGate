@@ -118,6 +118,16 @@ export async function getJailedIps(): Promise<Array<{ ip: string; ttl: number }>
  * { "error": "ip_jailed", "requestId": "<id>" }
  */
 export const ipJailMiddleware = async (req: Request, res: Response, next: NextFunction): Promise<void> => {
+    // Exempt control plane and admin routes so admin operations remain accessible
+    if (
+        req.path.startsWith('/api/v1/admin') ||
+        req.path.startsWith('/api/v1/analytics') ||
+        req.originalUrl?.startsWith('/api/v1/admin') ||
+        req.originalUrl?.startsWith('/api/v1/analytics')
+    ) {
+        return next();
+    }
+
     try {
         const clientIp = (req as any).clientIp || getClientIp(req);
         (req as any).clientIp = clientIp;

@@ -28,6 +28,16 @@ const THREAT_PATTERNS: { name: string; regex: RegExp }[] = [
  * 4. On clean payload: Calls next() immediately without blocking.
  */
 export const securityFilter = async (req: Request, res: Response, next: NextFunction): Promise<void> => {
+    // Exempt control plane and admin routes from abuse tracking and edge filtering
+    if (
+        req.path.startsWith('/api/v1/admin') ||
+        req.path.startsWith('/api/v1/analytics') ||
+        req.originalUrl?.startsWith('/api/v1/admin') ||
+        req.originalUrl?.startsWith('/api/v1/analytics')
+    ) {
+        return next();
+    }
+
     try {
         let bodyStr = '';
         const clientIp = (req as any).clientIp || getClientIp(req);

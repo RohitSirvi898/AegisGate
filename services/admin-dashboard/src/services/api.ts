@@ -183,27 +183,44 @@ export const purgeDeadLetterMessage = async (
     }
 };
 
+export class ApiError extends Error {
+    status: number;
+    retryAfter?: number;
+
+    constructor(message: string, status: number, retryAfter?: number) {
+        super(message);
+        this.name = 'ApiError';
+        this.status = status;
+        this.retryAfter = retryAfter;
+    }
+}
+
+const parseRetryAfter = (response: Response): number | undefined => {
+    const header = response.headers.get('Retry-After');
+    if (header) {
+        const val = parseInt(header, 10);
+        if (!isNaN(val) && val > 0) return val;
+    }
+    return undefined;
+};
+
 /**
  * Fetches all currently banned client IPs and their remaining TTLs from Gateway Core.
  */
 export const fetchJailedIps = async (token?: string): Promise<JailedIpRecord[]> => {
-    try {
-        const headers: Record<string, string> = {};
-        if (token) {
-            headers['Authorization'] = `Bearer ${token}`;
-        }
-        const response = await fetch(`${baseURL}/api/v1/admin/jailed-ips`, {
-            headers,
-            signal: AbortSignal.timeout(3000)
-        });
-        if (!response.ok) {
-            return [];
-        }
-        const data = await response.json();
-        return Array.isArray(data.jailedIps) ? data.jailedIps : [];
-    } catch {
-        return [];
+    const headers: Record<string, string> = {};
+    if (token) {
+        headers['Authorization'] = `Bearer ${token}`;
     }
+    const response = await fetch(`${baseURL}/api/v1/admin/jailed-ips`, {
+        headers,
+        signal: AbortSignal.timeout(3000)
+    });
+    if (!response.ok) {
+        throw new ApiError(`Failed to fetch jailed IPs: ${response.status}`, response.status, parseRetryAfter(response));
+    }
+    const data = await response.json();
+    return Array.isArray(data.jailedIps) ? data.jailedIps : [];
 };
 
 /**
@@ -231,23 +248,19 @@ export const unbanClientIp = async (ip: string, token?: string): Promise<void> =
  * Fetches active upstream circuit breaker states from Gateway Core.
  */
 export const fetchCircuitBreakers = async (token?: string): Promise<CircuitBreakerRecord[]> => {
-    try {
-        const headers: Record<string, string> = {};
-        if (token) {
-            headers['Authorization'] = `Bearer ${token}`;
-        }
-        const response = await fetch(`${baseURL}/api/v1/admin/circuit-breakers`, {
-            headers,
-            signal: AbortSignal.timeout(3000)
-        });
-        if (!response.ok) {
-            return [];
-        }
-        const data = await response.json();
-        return Array.isArray(data.circuitBreakers) ? data.circuitBreakers : [];
-    } catch {
-        return [];
+    const headers: Record<string, string> = {};
+    if (token) {
+        headers['Authorization'] = `Bearer ${token}`;
     }
+    const response = await fetch(`${baseURL}/api/v1/admin/circuit-breakers`, {
+        headers,
+        signal: AbortSignal.timeout(3000)
+    });
+    if (!response.ok) {
+        throw new ApiError(`Failed to fetch circuit breakers: ${response.status}`, response.status, parseRetryAfter(response));
+    }
+    const data = await response.json();
+    return Array.isArray(data.circuitBreakers) ? data.circuitBreakers : [];
 };
 
 /**
@@ -262,7 +275,7 @@ export const fetchTelemetry = async (projectId: string, token: string): Promise<
         signal: AbortSignal.timeout(3000)
     });
     if (!response.ok) {
-        throw new Error(`HTTP error ${response.status}`);
+        throw new ApiError(`Failed to fetch telemetry: ${response.status}`, response.status, parseRetryAfter(response));
     }
     return response.json();
 };

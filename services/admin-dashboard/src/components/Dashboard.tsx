@@ -17,9 +17,7 @@ import DLQMonitor from './DLQMonitor';
 import TenantProvisioning from './TenantProvisioning';
 import {
   fetchProjects,
-  fetchJailedIps,
   unbanClientIp,
-  fetchCircuitBreakers,
   type Project,
   type CircuitBreakerRecord
 } from '../services/api';
@@ -271,16 +269,20 @@ export default function Dashboard() {
   const [sampleBannerVisible, setSampleBannerVisible] = useState(true);
   const projectMenuRef = useRef<HTMLDivElement>(null);
 
-  // Telemetry Hook (Only polls if token is present)
-  const { threats, stats, refetch } = useThreatTelemetry(activeProjectId, token);
+  // Consolidated Telemetry, Circuit Breakers & Jailed IPs Hook
+  const {
+    threats,
+    stats,
+    circuitBreakers,
+    jailedList,
+    setJailedList,
+    connectionStatus,
+    refetch
+  } = useThreatTelemetry(activeProjectId, token);
 
-  // Jailed IPs State
-  const [jailedList, setJailedList] = useState<PrototypeJailItem[]>(() => (token ? [] : MOCK_JAILED_IPS));
+  // Jailed IPs UI State
   const [expandedIps, setExpandedIps] = useState<Record<string, boolean>>({});
   const [unbanModalIp, setUnbanModalIp] = useState<string | null>(null);
-
-  // Circuit Breakers State
-  const [circuitBreakers, setCircuitBreakers] = useState<CircuitBreakerRecord[]>([]);
 
   // Threat Stream Filters & Selected Event
   const [threatFilter, setThreatFilter] = useState<string>('All');
@@ -363,84 +365,7 @@ export default function Dashboard() {
     loadProjects();
   }, [token, activeProjectId, setActiveProject]);
 
-  // Load Admin Telemetry (Jailed IPs & Circuit Breakers)
-  const loadAdminTelemetry = async () => {
-    try {
-      const [ips, breakers] = await Promise.all([
-        fetchJailedIps(token || undefined),
-        fetchCircuitBreakers(token || undefined)
-      ]);
 
-      if (token) {
-        // Authenticated: Strict live data mapping
-        if (ips) {
-          setJailedList(
-            ips.map((item) => {
-              const ttlSec = item.ttl || 300;
-              const mins = Math.floor(ttlSec / 60);
-              const secs = ttlSec % 60;
-              const timeRemaining = `${mins}m ${secs < 10 ? '0' : ''}${secs}s`;
-              const pct = Math.min(100, Math.round((ttlSec / 600) * 100));
-              return {
-                ip: item.ip,
-                timeRemaining,
-                pct,
-                trigger: 'Rate limit / Signature rule',
-                lastRequest: 'Blocked at edge'
-              };
-            })
-          );
-        } else {
-          setJailedList([]);
-        }
-
-        if (breakers) {
-          setCircuitBreakers(breakers);
-        } else {
-          setCircuitBreakers([]);
-        }
-      } else {
-        // Unauthenticated preview / demo mode
-        if (ips && ips.length > 0) {
-          setJailedList(
-            ips.map((item) => {
-              const ttlSec = item.ttl || 300;
-              const mins = Math.floor(ttlSec / 60);
-              const secs = ttlSec % 60;
-              const timeRemaining = `${mins}m ${secs < 10 ? '0' : ''}${secs}s`;
-              const pct = Math.min(100, Math.round((ttlSec / 600) * 100));
-              return {
-                ip: item.ip,
-                timeRemaining,
-                pct,
-                trigger: 'Signature rule',
-                lastRequest: 'POST /api/v1/auth/login'
-              };
-            })
-          );
-        } else {
-          setJailedList(MOCK_JAILED_IPS);
-        }
-
-        if (breakers && breakers.length > 0) {
-          setCircuitBreakers(breakers);
-        } else {
-          setCircuitBreakers(MOCK_CIRCUIT_BREAKERS);
-        }
-      }
-    } catch {
-      if (token) {
-        setJailedList([]);
-        setCircuitBreakers([]);
-      }
-    }
-  };
-
-  useEffect(() => {
-    loadAdminTelemetry();
-    const timer = setInterval(loadAdminTelemetry, 5000);
-    return () => clearInterval(timer);
-  }, [token]);
 
   // Prevent premature render or unauthenticated route kick during hydration check
   if (isLoading) {
@@ -481,7 +406,6 @@ export default function Dashboard() {
   const handleFlushTelemetry = async () => {
     try {
       await refetch();
-      await loadAdminTelemetry();
     } catch {
       // Fallback
     }
@@ -595,9 +519,19 @@ export default function Dashboard() {
 
           {/* Right Header Navigation Items */}
           <div className="sp">
-            <span className="p" style={{ ['--c' as any]: 'var(--ok)' }}>
-              <i></i>Gateway online
-            </span>
+            {connectionStatus === 'rate_limited' ? (
+              <span className="p" style={{ ['--c' as any]: 'var(--hi)' }}>
+                <i></i>Sync paused (rate limited)
+              </span>
+            ) : connectionStatus === 'reconnecting' ? (
+              <span className="p" style={{ ['--c' as any]: 'var(--crit)' }}>
+                <i></i>Reconnecting...
+              </span>
+            ) : (
+              <span className="p" style={{ ['--c' as any]: 'var(--ok)' }}>
+                <i></i>Gateway online
+              </span>
+            )}
             {token ? (
               <button
                 className="sc sm"

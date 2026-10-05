@@ -48,7 +48,9 @@ http.globalAgent = ssrfHttpAgent;
 https.globalAgent = ssrfHttpsAgent;
 
 // Enable CORS globally to support frontend calls
-app.use(cors());
+app.use(cors({
+    exposedHeaders: ['Retry-After', 'X-Request-Id', 'X-Shielded-By']
+}));
 
 // =========================================================================
 // PIPELINE STEP 1: REQUEST ID ASSIGNMENT & INGRESS PAYLOAD CAP (100KB)

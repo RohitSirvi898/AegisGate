@@ -1,6 +1,13 @@
 import { useState, useEffect } from 'react';
-
-const baseURL = import.meta.env.VITE_API_BASE_URL;
+import {
+    fetchTelemetry,
+    fetchCircuitBreakers,
+    fetchJailedIps,
+    type JailedIpRecord,
+    type CircuitBreakerRecord,
+    type TelemetryResponse,
+    ApiError
+} from '../services/api';
 
 export interface ThreatRecord {
     _id: string;
@@ -14,6 +21,33 @@ export interface ThreatRecord {
     summary: string;
 }
 
+export interface PrototypeJailItem {
+    ip: string;
+    timeRemaining: string;
+    pct: number;
+    trigger: string;
+    lastRequest: string;
+}
+
+export type ConnectionStatus = 'connected' | 'rate_limited' | 'reconnecting';
+
+export const formatJailedIps = (ips: JailedIpRecord[]): PrototypeJailItem[] => {
+    return ips.map((item) => {
+        const ttlSec = item.ttl || 300;
+        const mins = Math.floor(ttlSec / 60);
+        const secs = ttlSec % 60;
+        const timeRemaining = `${mins}m ${secs < 10 ? '0' : ''}${secs}s`;
+        const pct = Math.min(100, Math.round((ttlSec / 600) * 100));
+        return {
+            ip: item.ip,
+            timeRemaining,
+            pct,
+            trigger: 'Rate limit / Signature rule',
+            lastRequest: 'Blocked at edge'
+        };
+    });
+};
+
 export const useThreatTelemetry = (activeProjectId: string | null, token: string | null) => {
     const [threats, setThreats] = useState<ThreatRecord[]>([]);
     const [stats, setStats] = useState({
@@ -21,86 +55,161 @@ export const useThreatTelemetry = (activeProjectId: string | null, token: string
         criticalCount: 0,
         highCount: 0
     });
+    const [circuitBreakers, setCircuitBreakers] = useState<CircuitBreakerRecord[]>([]);
+    const [jailedList, setJailedList] = useState<PrototypeJailItem[]>([]);
+    const [connectionStatus, setConnectionStatus] = useState<ConnectionStatus>('connected');
     const [loading, setLoading] = useState<boolean>(true);
     const [error, setError] = useState<string | null>(null);
-
-    const fetchTelemetry = async () => {
-        // Guard clause at the top: if no activeProjectId or token, do not fetch
-        if (!activeProjectId || !token) {
-            setLoading(false);
-            return;
-        }
-
-        try {
-            const headers: Record<string, string> = {
-                'X-Project-Id': activeProjectId,
-                'Authorization': `Bearer ${token}`
-            };
-
-            // Target the Gateway Core analytics endpoint with tenant header isolation
-            const response = await fetch(`${baseURL}/api/v1/analytics/telemetry`, {
-                headers,
-                signal: AbortSignal.timeout(3000)
-            });
-
-            if (!response.ok) {
-                throw new Error(`Server returned HTTP ${response.status}`);
-            }
-
-            const data = await response.json() as {
-                totalBlocks: number;
-                criticalCount: number;
-                highCount: number;
-                logs: ThreatRecord[];
-            };
-
-            setThreats(data.logs && data.logs.length > 0 ? data.logs : []);
-            setStats({
-                totalBlocks: data.totalBlocks || 0,
-                criticalCount: data.criticalCount || 0,
-                highCount: data.highCount || 0
-            });
-            setError(null);
-        } catch (err: any) {
-            setError(`Backend offline. Running in Simulation Mode.`);
-            setThreats([]);
-            setStats({
-                totalBlocks: 0,
-                criticalCount: 0,
-                highCount: 0
-            });
-            console.log('📡 [Dashboard Telemetry Polling] Server unreachable. Displaying local telemetry stream.');
-        } finally {
-            setLoading(false);
-        }
-    };
+    const [triggerCount, setTriggerCount] = useState<number>(0);
 
     useEffect(() => {
-        // Guard clause at the top of hook effect execution
-        if (!activeProjectId || !token) {
-            setLoading(false);
-            return;
-        }
+        let isMounted = true;
+        let timeoutId: ReturnType<typeof setTimeout> | null = null;
+        let isFetching = false;
 
-        // Run first fetch immediately
-        fetchTelemetry();
+        const poll = async () => {
+            if (isFetching) return;
+            isFetching = true;
 
-        // Performance-tuned polling routine: refresh exactly every 5 seconds
-        const intervalId = setInterval(() => {
-            if (!activeProjectId || !token) return;
-            fetchTelemetry();
-        }, 5000);
+            let nextDelayMs = 5000;
+
+            try {
+                const telemetryPromise: Promise<TelemetryResponse | null> =
+                    activeProjectId && token
+                        ? fetchTelemetry(activeProjectId, token)
+                        : Promise.resolve(null);
+
+                const breakersPromise: Promise<CircuitBreakerRecord[]> =
+                    fetchCircuitBreakers(token || undefined);
+
+                const jailedPromise: Promise<JailedIpRecord[]> =
+                    fetchJailedIps(token || undefined);
+
+                // Fetch telemetry, circuit breakers, and jailed IPs in a single bundled cycle via Promise.allSettled
+                const [telemetryResult, breakersResult, jailedResult] = await Promise.allSettled([
+                    telemetryPromise,
+                    breakersPromise,
+                    jailedPromise
+                ]);
+
+                if (!isMounted) return;
+
+                // Check if any endpoint received a 429 Too Many Requests response
+                let isRateLimited = false;
+                let retryAfterSec = 10;
+
+                const results = [telemetryResult, breakersResult, jailedResult];
+                for (const res of results) {
+                    if (res.status === 'rejected') {
+                        const reason = res.reason;
+                        if (reason instanceof ApiError && reason.status === 429) {
+                            isRateLimited = true;
+                            if (reason.retryAfter && reason.retryAfter > 0) {
+                                retryAfterSec = Math.max(retryAfterSec, reason.retryAfter);
+                            }
+                        } else if (reason?.status === 429 || reason?.message?.includes('429')) {
+                            isRateLimited = true;
+                            const parsed = parseInt(reason?.retryAfter, 10);
+                            if (!isNaN(parsed) && parsed > 0) {
+                                retryAfterSec = Math.max(retryAfterSec, parsed);
+                            }
+                        }
+                    }
+                }
+
+                if (isRateLimited) {
+                    setConnectionStatus('rate_limited');
+                    setError(`Sync paused (rate limited). Resuming in ${retryAfterSec}s...`);
+                    // Halt polling until the window resets rather than continuously retrying
+                    nextDelayMs = retryAfterSec * 1000;
+                    // Retain whatever live data was previously loaded (do not overwrite with mock fixtures)
+                    return;
+                }
+
+                // Process fulfilled responses
+                let anySuccess = false;
+                let anyFailure = false;
+
+                if (telemetryResult.status === 'fulfilled') {
+                    if (telemetryResult.value) {
+                        const data = telemetryResult.value;
+                        setThreats(data.logs && data.logs.length > 0 ? data.logs : []);
+                        setStats({
+                            totalBlocks: data.totalBlocks || 0,
+                            criticalCount: data.criticalCount || 0,
+                            highCount: data.highCount || 0
+                        });
+                        anySuccess = true;
+                    }
+                } else {
+                    anyFailure = true;
+                    // Retain live data on error
+                }
+
+                if (breakersResult.status === 'fulfilled') {
+                    setCircuitBreakers(breakersResult.value || []);
+                    anySuccess = true;
+                } else {
+                    anyFailure = true;
+                    // Retain live data on error
+                }
+
+                if (jailedResult.status === 'fulfilled') {
+                    setJailedList(formatJailedIps(jailedResult.value || []));
+                    anySuccess = true;
+                } else {
+                    anyFailure = true;
+                    // Retain live data on error
+                }
+
+                if (anySuccess) {
+                    setConnectionStatus('connected');
+                    setError(null);
+                } else if (anyFailure) {
+                    setConnectionStatus('reconnecting');
+                    setError('Reconnecting...');
+                }
+            } catch {
+                if (!isMounted) return;
+                setConnectionStatus('reconnecting');
+                setError('Reconnecting...');
+            } finally {
+                if (isMounted) {
+                    setLoading(false);
+                    isFetching = false;
+                    timeoutId = setTimeout(() => {
+                        poll();
+                    }, nextDelayMs);
+                }
+            }
+        };
+
+        // Run immediate initial fetch
+        poll();
 
         return () => {
-            clearInterval(intervalId);
+            isMounted = false;
+            if (timeoutId) {
+                clearTimeout(timeoutId);
+                timeoutId = null;
+            }
         };
-    }, [token, activeProjectId]); // Re-poll cleanly when credentials or project changes
+    }, [activeProjectId, token, triggerCount]);
+
+    const refetch = async () => {
+        setTriggerCount((prev) => prev + 1);
+    };
 
     return {
         threats,
         stats,
+        circuitBreakers,
+        setCircuitBreakers,
+        jailedList,
+        setJailedList,
+        connectionStatus,
         loading,
         error,
-        refetch: fetchTelemetry
+        refetch
     };
 };

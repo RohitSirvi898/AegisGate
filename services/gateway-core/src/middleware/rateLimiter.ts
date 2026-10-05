@@ -7,6 +7,16 @@ const WINDOW_SIZE_IN_SECONDS = 60;
 const MAX_REQUEST_LIMIT = 20; // Allow 20 requests per minute per IP
 
 export const rateLimiter = async (req: Request, res: Response, next: NextFunction): Promise<void> => {
+    // Exempt control plane and admin polling from public ingress rate limiting
+    if (
+        req.path.startsWith('/api/v1/admin') ||
+        req.path.startsWith('/api/v1/analytics') ||
+        req.originalUrl?.startsWith('/api/v1/admin') ||
+        req.originalUrl?.startsWith('/api/v1/analytics')
+    ) {
+        return next();
+    }
+
     const clientIp = (req as any).clientIp || getClientIp(req);
     (req as any).clientIp = clientIp;
 
