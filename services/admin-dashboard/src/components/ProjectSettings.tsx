@@ -96,7 +96,7 @@ export default function ProjectSettings({ activeProject, token, onProjectUpdated
     return (
       <div className="main" style={{ width: '960px', margin: 'auto' }}>
         <div>
-          <div style={{ fontSize: '20px', fontWeight: 600 }}>Project settings</div>
+          <div className="pt">Project settings</div>
           <div style={{ color: 'var(--t2)', marginTop: '4px' }}>
             No tenant project selected.
           </div>
@@ -116,14 +116,14 @@ export default function ProjectSettings({ activeProject, token, onProjectUpdated
   return (
     <div className="main" style={{ width: '960px', margin: 'auto' }}>
       <div>
-        <div style={{ fontSize: '20px', fontWeight: 600 }}>Project settings</div>
+        <div className="pt">Project settings</div>
         <div style={{ color: 'var(--t2)', marginTop: '4px' }}>
           Configure enforcement, upstream routing and alerts for {projectName}.
         </div>
       </div>
 
       <div style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
-        <span className="in cap" style={{ padding: '4px 10px', borderRadius: '8px' }}>
+        <span className="in cap" style={{ padding: '4px 10px', borderRadius: '2px' }}>
           Project ID
         </span>
         <span className="mono">{projectId || '—'}</span>

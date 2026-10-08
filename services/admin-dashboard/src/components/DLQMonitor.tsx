@@ -121,11 +121,11 @@ export default function DLQMonitor({ activeProjectId, token }: DLQMonitorProps) 
       {/* Header bar */}
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
         <div>
-          <div style={{ fontSize: '20px', fontWeight: 600 }}>Dead-letter queue</div>
+          <div className="pt">Dead-letter queue</div>
           <div style={{ color: 'var(--t2)', marginTop: '4px', whiteSpace: 'nowrap' }}>
-            Messages that fail processing after 3 retries are moved to{' '}
-            <span className="in mono" style={{ padding: '2px 6px', borderRadius: '6px' }}>
-              aegis_dead_letter
+            Unprocessable poison messages rejected by the consumer are routed to{' '}
+            <span className="in mono" style={{ padding: '2px 6px', borderRadius: '2px' }}>
+              aegis.audit.dlq
             </span>
             .
           </div>
@@ -142,7 +142,7 @@ export default function DLQMonitor({ activeProjectId, token }: DLQMonitorProps) 
       <div className="card" style={{ width: '320px', display: 'grid', gap: '8px' }}>
         <span style={{ color: 'var(--t2)', fontWeight: 500 }}>Poison messages</span>
         <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
-          <span style={{ fontSize: '32px', fontWeight: 600 }}>{activeList.length}</span>
+          <span className="kvv">{activeList.length}</span>
           {activeList.length === 0 ? (
             <span className="p" style={{ ['--c' as any]: 'var(--ok)' }}>
               <i></i>Healthy

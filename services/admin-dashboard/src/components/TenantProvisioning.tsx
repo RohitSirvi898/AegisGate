@@ -78,7 +78,7 @@ export default function TenantProvisioning({ token, onProjectCreated }: TenantPr
   return (
     <div className="main" style={{ width: '800px', margin: 'auto' }}>
       <div>
-        <div style={{ fontSize: '20px', fontWeight: 600 }}>Provision a tenant</div>
+        <div className="pt">Provision a tenant</div>
         <div style={{ color: 'var(--t2)', marginTop: '4px' }}>
           Register a new tenant to generate its project ID and API key.
         </div>

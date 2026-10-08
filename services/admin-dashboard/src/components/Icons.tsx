@@ -6,6 +6,13 @@ interface IconProps {
   style?: React.CSSProperties;
 }
 
+export const GateIcon: React.FC<IconProps> = ({ size = 22, className = '', style }) => (
+  <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" className={className} style={style}>
+    <rect x="2" y="2" width="20" height="20" />
+    <path d="M8 2v7M8 15v7M16 2v3M16 11v11" />
+  </svg>
+);
+
 export const ShieldIcon: React.FC<IconProps> = ({ size = 16, className = '', style }) => (
   <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" className={className} style={style}>
     <path d="M12 3l8 3v6c0 5-3.5 8-8 9-4.5-1-8-4-8-9V6z" />

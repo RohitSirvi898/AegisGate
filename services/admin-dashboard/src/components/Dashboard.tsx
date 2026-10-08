@@ -1,6 +1,7 @@
 import { useState, useEffect, useRef } from 'react';
 import { useNavigate } from 'react-router-dom';
 import {
+  GateIcon,
   ShieldIcon,
   CaretDownIcon,
   ChevronRightIcon,
@@ -473,9 +474,9 @@ export default function Dashboard() {
         {/* Top Brand & Context Row (56px high, NO bottom border) */}
         <div className="hd">
           <span style={{ color: 'var(--ac)', display: 'flex' }}>
-            <ShieldIcon size={20} />
+            <GateIcon size={22} />
           </span>
-          <b>AegisGate</b>
+          <b className="lgt">AegisGate</b>
           <span className="dv"></span>
 
           {/* Project Selector Button */}
@@ -570,7 +571,6 @@ export default function Dashboard() {
                 className={isActive ? 'on' : ''}
               >
                 {tab.label}
-                {isActive && <span className="tab-indicator" />}
               </button>
             );
           })}
@@ -607,7 +607,7 @@ export default function Dashboard() {
                   <ShieldIcon size={16} />
                 </span>
               </div>
-              <div style={{ fontSize: '32px', fontWeight: 600 }}>{totalBlockedCount}</div>
+              <div className="kvv">{totalBlockedCount}</div>
               <div className="cap" style={{ whiteSpace: 'nowrap' }}>
                 {token ? 'Cumulative recorded events' : 'up 12.4% vs previous 24h'}
               </div>
@@ -621,7 +621,7 @@ export default function Dashboard() {
                   <WarningIcon size={16} />
                 </span>
               </div>
-              <div style={{ fontSize: '32px', fontWeight: 600 }}>{criticalThreatCount}</div>
+              <div className="kvv">{criticalThreatCount}</div>
               <div className="cap" style={{ whiteSpace: 'nowrap' }}>
                 <button
                   type="button"
@@ -641,7 +641,7 @@ export default function Dashboard() {
                   <LockIcon size={16} />
                 </span>
               </div>
-              <div style={{ fontSize: '32px', fontWeight: 600 }}>{tripwireCount}</div>
+              <div className="kvv">{tripwireCount}</div>
               <div className="cap" style={{ whiteSpace: 'nowrap' }}>
                 Auto-blocked by signature rules
               </div>
@@ -655,7 +655,7 @@ export default function Dashboard() {
                   <CheckIcon size={16} />
                 </span>
               </div>
-              <div style={{ fontSize: '32px', fontWeight: 600 }}>p95 4.8 ms</div>
+              <div className="kvv">p95 4.8 ms</div>
               <div className="cap" style={{ whiteSpace: 'nowrap' }}>
                 p50 1.8 ms - p99 8.2 ms - last 24h
               </div>
@@ -767,15 +767,15 @@ export default function Dashboard() {
                           </span>
                         </div>
                         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: '8px' }}>
-                          <div style={{ background: 'var(--card)', borderRadius: '10px', padding: '8px 12px' }}>
+                          <div style={{ background: 'var(--card)', borderRadius: '2px', padding: '8px 12px' }}>
                             <div className="cap">In-flight</div>
                             <div style={{ fontWeight: 500, whiteSpace: 'nowrap' }}>{cb.inFlight} / 100</div>
                           </div>
-                          <div style={{ background: 'var(--card)', borderRadius: '10px', padding: '8px 12px' }}>
+                          <div style={{ background: 'var(--card)', borderRadius: '2px', padding: '8px 12px' }}>
                             <div className="cap">Failures</div>
                             <div style={{ fontWeight: 500, whiteSpace: 'nowrap' }}>{cb.consecutiveFailures} / 5</div>
                           </div>
-                          <div style={{ background: 'var(--card)', borderRadius: '10px', padding: '8px 12px' }}>
+                          <div style={{ background: 'var(--card)', borderRadius: '2px', padding: '8px 12px' }}>
                             <div className="cap">Cooldown</div>
                             <div style={{ fontWeight: 500, whiteSpace: 'nowrap' }}>
                               {cb.state === 'OPEN' ? 'Retry in 18 s' : cb.state === 'HALF_OPEN' ? 'Probing now' : '30 s probe'}
@@ -961,7 +961,7 @@ export default function Dashboard() {
                         display: 'inline-flex',
                         alignItems: 'center',
                         justifyContent: 'center',
-                        borderRadius: '4px'
+                        borderRadius: '2px'
                       }}
                       aria-label="Close inspector"
                       title="Close inspector"

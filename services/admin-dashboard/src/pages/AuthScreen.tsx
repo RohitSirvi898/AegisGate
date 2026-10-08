@@ -1,7 +1,7 @@
 import React, { useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext';
-import { ShieldIcon, MailIcon, LockIcon, EyeIcon } from '../components/Icons';
+import { GateIcon, MailIcon, LockIcon, EyeIcon } from '../components/Icons';
 import { login as apiLogin, register as apiRegister } from '../services/api';
 
 export default function AuthScreen() {
@@ -93,14 +93,14 @@ export default function AuthScreen() {
       <div className="card" style={{ width: '440px', padding: '32px' }}>
         <div style={{ textAlign: 'center', marginBottom: '24px' }}>
           <span style={{ color: 'var(--ac)', display: 'inline-flex' }}>
-            <ShieldIcon size={28} />
+            <GateIcon size={30} />
           </span>
-          <div style={{ fontSize: '20px', fontWeight: 600, marginTop: '8px' }}>AegisGate</div>
-          <div className="cap" style={{ marginTop: '2px' }}>Sign in to the edge security console</div>
+          <div className="pt" style={{ marginTop: '8px' }}>AegisGate</div>
+          <div className="cap" style={{ marginTop: '4px' }}>Sign in to the edge security console</div>
         </div>
 
         {/* Segmented Control */}
-        <div style={{ display: 'flex', background: 'var(--card)', border: '1px solid var(--bd)', borderRadius: '8px', padding: '3px', marginBottom: '24px' }}>
+        <div style={{ display: 'flex', background: 'var(--card)', border: '1px solid var(--bd)', borderRadius: '2px', padding: '3px', marginBottom: '24px' }}>
           <button
             type="button"
             onClick={() => { setIsLogin(true); setError(null); setPasswordMismatch(false); }}
@@ -108,7 +108,7 @@ export default function AuthScreen() {
               flex: 1,
               height: '32px',
               border: 0,
-              borderRadius: '6px',
+              borderRadius: '2px',
               background: isLogin ? 'var(--inset)' : 'none',
               color: isLogin ? 'var(--t1)' : 'var(--t2)'
             }}
@@ -122,7 +122,7 @@ export default function AuthScreen() {
               flex: 1,
               height: '32px',
               border: 0,
-              borderRadius: '6px',
+              borderRadius: '2px',
               background: !isLogin ? 'var(--inset)' : 'none',
               color: !isLogin ? 'var(--t1)' : 'var(--t2)'
             }}

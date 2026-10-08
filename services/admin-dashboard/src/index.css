@@ -1,19 +1,29 @@
 :root {
-  --bg: #12161D;
-  --card: #181E27;
-  --inset: #1E2530;
-  --hover: #252D3A;
-  --bd: rgba(255, 255, 255, 0.07);
-  --bd2: rgba(255, 255, 255, 0.18);
-  --t1: #E4E8EF;
-  --t2: #A3AEBF;
-  --t3: #8794A7;
-  --ac: #8FA8F0;
-  --ok: #7CC4A0;
-  --crit: #E0707F;
-  --hi: #E39B6B;
-  --med: #D8C27A;
-  --low: #8A97AA;
+  /* Surfaces & Insets */
+  --bg: #0B0E0D;         /* Near-black with deep green tint */
+  --card: #111614;       /* Base card background */
+  --inset: #171E1B;      /* Inset containers, code blocks, inputs */
+  --hover: #1D2622;      /* Row hover state */
+
+  /* Borders */
+  --bd: rgba(232, 228, 216, 0.1);   /* Standard structural border */
+  --bd2: rgba(232, 228, 216, 0.22); /* Input and interactive border */
+
+  /* Bone-white Text Palette */
+  --t1: #E8E4D8;        /* Primary bone-white text */
+  --t2: #AAB3AB;        /* Secondary muted body text */
+  --t3: #838E86;        /* Captions, table headers, timestamps */
+
+  /* Interactive Accent (Used ONLY for actions/focus/tabs, NEVER for status) */
+  --ac: #D4A24C;        /* Brass */
+  --ac-hover: #E3B25A;
+
+  /* Deterministic Status Indicators */
+  --ok: #5FBF8F;        /* Green (Healthy / Closed circuit / Live) */
+  --crit: #E5533D;      /* Vermilion (Critical / Open circuit / Jailed) */
+  --hi: #E8895A;        /* Amber / Orange (High severity) */
+  --med: #C8B26B;       /* Warm yellow (Medium / Half-open) */
+  --low: #8F9A92;       /* Slate / Grey (Low / Normal) */
 }
 
 * {
@@ -22,16 +32,16 @@
 }
 
 body {
-  background: var(--bg);
+  background-color: var(--bg);
   color: var(--t1);
-  font: 400 13.5px 'IBM Plex Sans', sans-serif;
+  font: 400 14.5px 'Barlow', sans-serif;
   font-variant-numeric: tabular-nums;
   overflow-x: auto;
   -webkit-font-smoothing: antialiased;
 }
 
 .mono {
-  font-family: 'IBM Plex Mono', monospace;
+  font-family: 'JetBrains Mono', monospace;
   font-size: 12.5px;
 }
 
@@ -48,12 +58,16 @@ body {
   display: flex;
   align-items: center;
   padding: 0 40px;
+  border-bottom: 1px solid var(--bd);
+  border-top: 2px solid var(--ac);
   gap: 16px;
 }
 
-.hd b {
-  font-size: 16px;
-  font-weight: 600;
+.hd b,
+.lgt {
+  font: 700 22px 'Barlow Condensed', sans-serif;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
 }
 
 .dv {
@@ -72,10 +86,10 @@ body {
 .tabs {
   display: flex;
   align-items: center;
-  gap: 32px;
+  gap: 24px;
   padding: 0 40px;
   border-bottom: 1px solid var(--bd);
-  height: 48px;
+  height: 44px;
   position: relative;
 }
 
@@ -84,16 +98,20 @@ body {
   position: relative;
   display: flex;
   align-items: center;
-  height: 48px;
+  height: 44px;
+  line-height: 44px;
   padding: 0;
-  font: 500 14px 'IBM Plex Sans', sans-serif;
+  font: 600 15px 'Barlow Condensed', sans-serif;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
   color: var(--t2);
   background: transparent;
   border: 0;
+  border-bottom: 2px solid transparent;
   cursor: pointer;
   user-select: none;
   text-decoration: none;
-  transition: color 0.15s ease;
+  transition: color 0.15s ease, border-color 0.15s ease;
 }
 
 .tabs button:hover,
@@ -104,24 +122,15 @@ body {
 .tabs button.on,
 .tabs a.on {
   color: var(--t1);
-}
-
-.tabs .tab-indicator {
-  position: absolute;
-  bottom: 0;
-  left: 0;
-  right: 0;
-  height: 2px;
-  background: var(--ac);
-  border-top-left-radius: 2px;
-  border-top-right-radius: 2px;
+  border-bottom-color: var(--ac);
 }
 
 button {
-  font: 500 13.5px 'IBM Plex Sans', sans-serif;
+  font: 600 14px 'Barlow', sans-serif;
+  letter-spacing: 0.02em;
   height: 40px;
   padding: 0 16px;
-  border-radius: 8px;
+  border-radius: 2px;
   cursor: pointer;
   white-space: nowrap;
   border: 0;
@@ -129,9 +138,11 @@ button {
   align-items: center;
   justify-content: center;
   text-decoration: none;
+  transition: background 0.15s ease, border-color 0.15s ease, color 0.15s ease;
 }
 
-button:focus-visible, input:focus-visible {
+button:focus-visible,
+input:focus-visible {
   outline: 2px solid var(--ac);
 }
 
@@ -139,12 +150,11 @@ button:focus-visible, input:focus-visible {
   background: var(--ac);
   color: var(--bg);
   border: 0;
+  border-radius: 2px;
 }
 
-.sc {
-  background: none;
-  color: var(--t1);
-  border: 1px solid var(--bd2);
+.pr:hover:not(:disabled) {
+  background: var(--ac-hover);
 }
 
 .pr:disabled {
@@ -152,8 +162,20 @@ button:focus-visible, input:focus-visible {
   cursor: default;
 }
 
+.sc {
+  background: none;
+  color: var(--t1);
+  border: 1px solid var(--bd2);
+  border-radius: 2px;
+}
+
+.sc:hover:not(:disabled) {
+  background: var(--hover);
+}
+
 .sm {
   height: 32px;
+  padding: 0 12px;
 }
 
 .lk {
@@ -175,17 +197,32 @@ button:focus-visible, input:focus-visible {
 .card {
   background: var(--card);
   border: 1px solid var(--bd);
-  border-radius: 14px;
+  border-radius: 2px;
   padding: 24px;
 }
 
+.pt {
+  font: 700 36px/1 'Barlow Condensed', sans-serif;
+  text-transform: uppercase;
+  letter-spacing: 0.01em;
+}
+
 .ct {
-  font-size: 15px;
-  font-weight: 600;
+  font: 600 21px/1.1 'Barlow Condensed', sans-serif;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--t1);
+}
+
+.kvv {
+  font: 700 46px/1 'Barlow Condensed', sans-serif;
+  line-height: 1;
+  color: var(--t1);
 }
 
 .cap {
-  font-size: 12px;
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 11.5px;
   color: var(--t3);
 }
 
@@ -195,18 +232,20 @@ button:focus-visible, input:focus-visible {
   gap: 6px;
   height: 22px;
   padding: 0 8px;
-  border-radius: 6px;
-  font: 500 12px 'IBM Plex Sans', sans-serif;
+  border-radius: 2px;
+  font: 500 11.5px 'JetBrains Mono', monospace;
   white-space: nowrap;
-  background: color-mix(in srgb, var(--c) 14%, transparent);
-  color: color-mix(in srgb, var(--c) 88%, #fff);
+  border: 1px solid color-mix(in srgb, var(--c, var(--low)) 55%, transparent);
+  background: color-mix(in srgb, var(--c, var(--low)) 9%, transparent);
+  color: color-mix(in srgb, var(--c, var(--low)) 88%, #ffffff);
 }
 
 .p i {
   width: 6px;
   height: 6px;
   border-radius: 50%;
-  background: var(--c);
+  background: var(--c, var(--low));
+  flex-shrink: 0;
 }
 
 .main {
@@ -223,7 +262,7 @@ button:focus-visible, input:focus-visible {
 
 .in {
   background: var(--inset);
-  border-radius: 10px;
+  border-radius: 2px;
   padding: 12px 16px;
 }
 
@@ -231,12 +270,13 @@ button:focus-visible, input:focus-visible {
   margin: 24px 40px 0;
   height: 36px;
   background: var(--inset);
-  border-radius: 8px;
+  border-radius: 2px;
   display: flex;
   align-items: center;
   padding: 0 16px;
   gap: 6px;
   color: var(--t2);
+  font-family: 'Barlow', sans-serif;
 }
 
 .tr {
@@ -248,13 +288,13 @@ button:focus-visible, input:focus-visible {
   gap: 8px;
   position: relative;
   white-space: nowrap;
+  transition: background 0.15s ease;
 }
 
 .tr.h {
   height: 40px;
   color: var(--t3);
-  font-weight: 500;
-  font-size: 13px;
+  font: 500 12px 'JetBrains Mono', monospace;
 }
 
 .tr.sel {
@@ -271,26 +311,36 @@ button:focus-visible, input:focus-visible {
   background: var(--ac);
 }
 
+.tr:not(.h):hover {
+  background: var(--hover);
+}
+
 .bar {
   height: 6px;
-  border-radius: 3px;
-  background: #2C3544;
+  border-radius: 2px;
+  background: #232C28;
 }
 
 .bar div {
   height: 100%;
-  background: #9DAAC0;
-  border-radius: 3px;
+  background: #9BA59D;
+  border-radius: 2px;
 }
 
 .ch {
   height: 28px;
   padding: 0 12px;
-  border-radius: 8px;
+  border-radius: 2px;
   border: 1px solid var(--bd2);
   background: none;
   color: var(--t2);
   font-size: 12.5px;
+  font-family: 'Barlow', sans-serif;
+  transition: background 0.15s ease, color 0.15s ease;
+}
+
+.ch:hover {
+  background: var(--hover);
 }
 
 .ch.on {
@@ -302,12 +352,12 @@ button:focus-visible, input:focus-visible {
   width: 40px;
   height: 22px;
   border-radius: 11px;
-  background: #4A5568;
+  background: #3A443F;
   position: relative;
   cursor: pointer;
   flex: none;
   border: 0;
-  transition: background 0.15s;
+  transition: background 0.15s ease;
 }
 
 .tg:after {
@@ -319,7 +369,7 @@ button:focus-visible, input:focus-visible {
   height: 16px;
   border-radius: 50%;
   background: var(--t1);
-  transition: left 0.15s;
+  transition: left 0.15s ease;
 }
 
 .tg.on {
@@ -345,7 +395,7 @@ label {
   height: 40px;
   background: var(--inset);
   border: 1px solid var(--bd2);
-  border-radius: 8px;
+  border-radius: 2px;
   padding: 0 12px;
   color: var(--t2);
 }
@@ -369,18 +419,18 @@ label {
 }
 
 .fld.mono input {
-  font-family: 'IBM Plex Mono', monospace;
+  font-family: 'JetBrains Mono', monospace;
   font-size: 12.5px;
 }
 
 .hp {
-  font-size: 12px;
+  font-size: 12.5px;
   color: var(--t3);
   margin-top: 6px;
 }
 
 .nt {
-  border-radius: 8px;
+  border-radius: 2px;
   padding: 10px 12px;
   font-size: 13px;
   margin-bottom: 16px;
@@ -394,7 +444,6 @@ label {
   align-items: center;
   justify-content: center;
   z-index: 50;
-  backdrop-filter: blur(2px);
 }
 
 .toast {
@@ -405,11 +454,11 @@ label {
   background: var(--card);
   border: 1px solid var(--bd2);
   padding: 12px 20px;
-  border-radius: 8px;
+  border-radius: 2px;
   z-index: 99;
-  box-shadow: 0 8px 30px rgba(0, 0, 0, 0.5);
   color: var(--t1);
   font-size: 13.5px;
+  font-family: 'Barlow', sans-serif;
   animation: f 0.15s ease;
 }
 
@@ -419,20 +468,20 @@ label {
   left: 260px;
   background: var(--card);
   border: 1px solid var(--bd);
-  border-radius: 8px;
+  border-radius: 2px;
   padding: 4px;
   width: 200px;
   z-index: 40;
-  box-shadow: 0 8px 30px rgba(0, 0, 0, 0.5);
 }
 
 .menu div {
   padding: 8px 12px;
-  border-radius: 6px;
+  border-radius: 2px;
   cursor: pointer;
   display: flex;
   justify-content: space-between;
   align-items: center;
+  transition: background 0.15s ease;
 }
 
 .menu div:hover {
@@ -463,16 +512,4 @@ svg {
 
 .fd {
   animation: f 0.15s ease;
-}
-
-button, .tr, .menu div {
-  transition: background 0.15s, border-color 0.15s;
-}
-
-button.sc:hover, .ch:hover {
-  background: var(--hover);
-}
-
-.tr:not(.h):hover {
-  background: var(--hover);
 }
