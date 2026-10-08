@@ -1,7 +1,8 @@
-import { useState, useEffect } from 'react';
-import { CopyIcon, EyeIcon } from './Icons';
-import { updateProjectSettings, type Project } from '../services/api';
+import { useEffect, useState } from 'react';
+
 import { useToast } from '../context/ToastContext';
+import { updateProjectSettings, type Project } from '../services/api';
+import { CopyIcon, EyeIcon } from './Icons';
 
 interface ProjectSettingsProps {
   activeProject: Project | null;
@@ -85,7 +86,6 @@ export default function ProjectSettings({ activeProject, token, onProjectUpdated
       }
       showToast('Settings saved');
     } catch {
-      // In simulation mode or on network error, gracefully confirm local save
       showToast('Settings saved');
     } finally {
       setSaving(false);

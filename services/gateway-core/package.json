@@ -7,7 +7,8 @@
     "dev": "tsx watch ./src/index.ts",
     "build": "tsc",
     "start": "node dist/index.js",
-    "test": "tsx src/__tests__/hardening.test.ts"
+    "test": "tsx src/__tests__/hardening.test.ts",
+    "lint": "tsc --noEmit"
   },
   "keywords": [],
   "author": "",

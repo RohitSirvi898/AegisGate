@@ -1,7 +1,8 @@
 import React, { useState } from 'react';
 import { useNavigate } from 'react-router-dom';
+
+import { EyeIcon, GateIcon, LockIcon, MailIcon } from '../components/Icons';
 import { useAuth } from '../context/AuthContext';
-import { GateIcon, MailIcon, LockIcon, EyeIcon } from '../components/Icons';
 import { login as apiLogin, register as apiRegister } from '../services/api';
 
 export default function AuthScreen() {
@@ -49,7 +50,6 @@ export default function AuthScreen() {
         setPassword('');
         setConfirmPassword('');
       } catch (err: any) {
-        // Fallback for simulation / mock environment if server is unreachable
         if (err.message && err.message.includes('fetch')) {
           setAccountCreated(true);
           setIsLogin(true);
@@ -64,7 +64,6 @@ export default function AuthScreen() {
       return;
     }
 
-    // Sign in
     setLoading(true);
     try {
       const data = await apiLogin({ email, password });
@@ -75,7 +74,6 @@ export default function AuthScreen() {
         throw new Error('Authentication token not received.');
       }
     } catch (err: any) {
-      // Graceful simulation fallback: if server is offline, generate a mock token so console can be previewed
       if (!err.message || err.message.includes('fetch') || err.message.includes('Failed to fetch') || err.message.includes('NetworkError')) {
         const mockToken = 'mock_jwt_' + btoa(email || 'demo');
         login(mockToken, { email: email.trim(), role: 'admin' });

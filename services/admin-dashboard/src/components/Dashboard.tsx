@@ -1,27 +1,28 @@
-import { useState, useEffect, useRef } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
-import {
-  GateIcon,
-  ShieldIcon,
-  CaretDownIcon,
-  ChevronRightIcon,
-  CloseIcon,
-  LockIcon,
-  WarningIcon,
-  CheckIcon
-} from './Icons';
-import { useThreatTelemetry, type ThreatRecord } from '../hooks/useThreatTelemetry';
+
 import { useAuth } from '../context/AuthContext';
 import { useToast } from '../context/ToastContext';
-import ProjectSettings from './ProjectSettings';
-import DLQMonitor from './DLQMonitor';
-import TenantProvisioning from './TenantProvisioning';
+import { useThreatTelemetry, type ThreatRecord } from '../hooks/useThreatTelemetry';
 import {
   fetchProjects,
   unbanClientIp,
-  type Project,
-  type CircuitBreakerRecord
+  type CircuitBreakerRecord,
+  type Project
 } from '../services/api';
+import DLQMonitor from './DLQMonitor';
+import {
+  CaretDownIcon,
+  CheckIcon,
+  ChevronRightIcon,
+  CloseIcon,
+  GateIcon,
+  LockIcon,
+  ShieldIcon,
+  WarningIcon
+} from './Icons';
+import ProjectSettings from './ProjectSettings';
+import TenantProvisioning from './TenantProvisioning';
 
 // Severity color mapping matching prototype tokens
 const sevColor: Record<string, string> = {
@@ -73,9 +74,7 @@ const TIME_WINDOWS: TimeWindowOption[] = [
   { id: '7d', label: 'Last 7d', durationMs: 7 * 24 * 60 * 60 * 1000 }
 ];
 
-// ==========================================
-// MOCK DATA FIXTURES (For Unauthenticated Preview Only)
-// ==========================================
+// Mock fixtures for unauthenticated preview mode
 const MOCK_METRICS = {
   totalBlocks: 148,
   criticalCount: 42,
@@ -252,10 +251,8 @@ export default function Dashboard() {
   const navigate = useNavigate();
   const { showToast } = useToast();
 
-  // Navigation tab: 0: Analytics, 1: Provisioning, 2: Settings, 3: DLQ
   const [activeTab, setActiveTab] = useState<number>(0);
 
-  // Projects State - Synchronously hydrated from localStorage if available
   const [projects, setProjects] = useState<Project[]>(() => {
     if (!token) return MOCK_PROJECTS;
     try {
@@ -270,7 +267,6 @@ export default function Dashboard() {
   const [sampleBannerVisible, setSampleBannerVisible] = useState(true);
   const projectMenuRef = useRef<HTMLDivElement>(null);
 
-  // Consolidated Telemetry, Circuit Breakers & Jailed IPs Hook
   const {
     threats,
     stats,
@@ -281,22 +277,18 @@ export default function Dashboard() {
     refetch
   } = useThreatTelemetry(activeProjectId, token);
 
-  // Jailed IPs UI State
   const [expandedIps, setExpandedIps] = useState<Record<string, boolean>>({});
   const [unbanModalIp, setUnbanModalIp] = useState<string | null>(null);
 
-  // Threat Stream Filters & Selected Event
   const [threatFilter, setThreatFilter] = useState<string>('All');
   const [timeWindow, setTimeWindow] = useState<TimeWindow>('1h');
   const [timeMenuOpen, setTimeMenuOpen] = useState<boolean>(false);
   const timeMenuRef = useRef<HTMLDivElement>(null);
 
-  // Bug 2 fix: Explicit selection and inspector drawer open/closed state
   const [selectedThreatIndex, setSelectedThreatIndex] = useState<number | null>(0);
   const [isInspectorOpen, setIsInspectorOpen] = useState<boolean>(true);
   const [headersAccordionOpen, setHeadersAccordionOpen] = useState(false);
 
-  // Close menus on click outside
   useEffect(() => {
     if (!timeMenuOpen) return;
     const handleClickOutside = (e: MouseEvent) => {
@@ -334,19 +326,17 @@ export default function Dashboard() {
           try {
             localStorage.setItem('aegis_projects', JSON.stringify(data));
           } catch {
-            // ignore storage quota errors
+            // Storage quota fallback
           }
           if (!activeProjectId || !data.some((p) => p._id === activeProjectId)) {
             setActiveProject(data[0]._id);
           }
         } else {
-          // Empty project list from backend
           setProjects([]);
           localStorage.removeItem('aegis_projects');
           setActiveProject(null);
         }
       } catch {
-        // On network error or offline mode, retain any cached projects
         try {
           const saved = localStorage.getItem('aegis_projects');
           if (saved) {
@@ -359,16 +349,13 @@ export default function Dashboard() {
             }
           }
         } catch {
-          // retain state
+          // Retain current in-memory state
         }
       }
     };
     loadProjects();
   }, [token, activeProjectId, setActiveProject]);
 
-
-
-  // Prevent premature render or unauthenticated route kick during hydration check
   if (isLoading) {
     return (
       <div style={{ minHeight: '100vh', display: 'flex', alignItems: 'center', justifyContent: 'center', background: 'var(--bg)' }}>
@@ -382,12 +369,10 @@ export default function Dashboard() {
     );
   }
 
-  // Determine Active Project
   const activeProject = token
     ? (projects.find((p) => p._id === activeProjectId) || projects[0] || null)
     : (projects.find((p) => p._id === activeProjectId) || projects[0] || null);
 
-  // Unban Action
   const handleConfirmUnban = async () => {
     if (!unbanModalIp) return;
     const ip = unbanModalIp;
@@ -396,26 +381,22 @@ export default function Dashboard() {
     try {
       await unbanClientIp(ip, token || undefined);
     } catch {
-      // Continue locally for smooth UX
+      // Allow optimistic UI update
     }
 
     setJailedList((prev) => prev.filter((item) => item.ip !== ip));
     showToast('IP unbanned');
   };
 
-  // Telemetry Flush Action
   const handleFlushTelemetry = async () => {
     try {
       await refetch();
     } catch {
-      // Fallback
+      // Suppress network refresh errors
     }
     showToast('Telemetry flushed');
   };
 
-  // Auth-aware data resolution:
-  // If authenticated: strictly live data, NO mock fallbacks
-  // If unauthenticated preview: mock fixtures
   const displayJailedList: PrototypeJailItem[] = token ? jailedList : (jailedList.length > 0 ? jailedList : MOCK_JAILED_IPS);
   const displayCircuitBreakers: CircuitBreakerRecord[] = token ? circuitBreakers : (circuitBreakers.length > 0 ? circuitBreakers : MOCK_CIRCUIT_BREAKERS);
 
@@ -423,7 +404,6 @@ export default function Dashboard() {
     ? (threats && threats.length > 0 ? threats.map(mapThreatRecordToPrototypeEvent) : [])
     : (threats && threats.length > 0 ? threats.map(mapThreatRecordToPrototypeEvent) : MOCK_THREATS);
 
-  // Time Window Filtering (Bug 4)
   const selectedWindowObj = TIME_WINDOWS.find((w) => w.id === timeWindow) || TIME_WINDOWS[1];
   const cutoff = Date.now() - selectedWindowObj.durationMs;
 
@@ -438,7 +418,6 @@ export default function Dashboard() {
     return true;
   });
 
-  // Bug 2 fix: Selected Event is null when drawer is closed or no valid event is selected
   const selectedEvent =
     isInspectorOpen &&
     selectedThreatIndex !== null &&

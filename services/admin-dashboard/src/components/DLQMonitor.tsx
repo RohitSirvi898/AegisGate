@@ -1,7 +1,8 @@
-import { useState, useEffect } from 'react';
-import { CloseIcon, ShieldCheckIcon } from './Icons';
-import { fetchDeadLetterLogs, type DeadLetterLog } from '../services/api';
+import { useEffect, useState } from 'react';
+
 import { useToast } from '../context/ToastContext';
+import { fetchDeadLetterLogs, type DeadLetterLog } from '../services/api';
+import { CloseIcon, ShieldCheckIcon } from './Icons';
 
 interface DLQMonitorProps {
   activeProjectId: string | null;
@@ -81,11 +82,10 @@ export default function DLQMonitor({ activeProjectId, token }: DLQMonitorProps) 
           return;
         }
       } catch {
-        // Fallback gracefully
+        // Fallback to local state
       }
     }
 
-    // In simulation mode without live logs, toggle between healthy and prototype messages on manual refresh
     if (!token || !activeProjectId) {
       setIsSimulationEmpty((prev) => !prev);
     } else {
@@ -99,7 +99,6 @@ export default function DLQMonitor({ activeProjectId, token }: DLQMonitorProps) 
     if (activeProjectId && token) {
       loadData();
     } else {
-      // In offline/sample preview, start in healthy (0) state
       setIsSimulationEmpty(true);
     }
   }, [activeProjectId, token]);

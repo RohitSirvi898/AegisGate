@@ -1,4 +1,4 @@
-import React, { createContext, useContext, useState, useEffect } from 'react';
+import React, { createContext, useContext, useEffect, useState } from 'react';
 
 export interface User {
   id?: string;
@@ -20,7 +20,6 @@ interface AuthContextType {
 const AuthContext = createContext<AuthContextType | undefined>(undefined);
 
 export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
-  // Synchronous state hydration on initialization
   const [token, setToken] = useState<string | null>(() => {
     try {
       return localStorage.getItem('aegis_token');
@@ -49,7 +48,6 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   const [isLoading, setIsLoading] = useState<boolean>(true);
 
   useEffect(() => {
-    // Confirm persistent storage hydration has occurred
     const timer = setTimeout(() => {
       setIsLoading(false);
     }, 0);

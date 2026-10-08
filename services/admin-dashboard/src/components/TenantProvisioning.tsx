@@ -1,7 +1,8 @@
 import React, { useState } from 'react';
-import { WarningIcon } from './Icons';
-import { createProject, type Project } from '../services/api';
+
 import { useToast } from '../context/ToastContext';
+import { createProject, type Project } from '../services/api';
+import { WarningIcon } from './Icons';
 
 interface TenantProvisioningProps {
   token: string | null;
@@ -34,7 +35,6 @@ export default function TenantProvisioning({ token, onProjectCreated }: TenantPr
         });
         if (onProjectCreated) onProjectCreated(newProj);
       } else {
-        // Fallback for simulation / mock mode
         const mockProj: Project = {
           _id: '6ac2393879e7eaec' + Math.random().toString(16).slice(2, 10),
           projectName: projectName.trim(),
@@ -52,7 +52,6 @@ export default function TenantProvisioning({ token, onProjectCreated }: TenantPr
         if (onProjectCreated) onProjectCreated(mockProj);
       }
     } catch {
-      // Graceful fallback for offline dev/test environment
       const mockId = '6ac2393879e7eaec68377b1c';
       const mockKey = 'ag_live_7Hq2Zx9Kc4Vb1Nm8Lw3Rt6Yd0Fa5Sj2Pe9Uo4Gh';
       const fallbackProj: Project = {

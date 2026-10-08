@@ -1,286 +1,225 @@
-import type { Request } from 'express';
 import net from 'node:net';
 
-/**
- * Strips surrounding brackets, trailing port (e.g. 1.2.3.4:8080 or [::1]:80),
- * and whitespace.
- */
+import type { Request } from 'express';
+
 export function cleanIpString(rawIp: string): string {
-    let clean = rawIp.trim();
+  let clean = rawIp.trim();
 
-    // Check for bracketed IPv6 with optional port: [2001:db8::1]:8080 or [::1]
-    if (clean.startsWith('[')) {
-        const closeIdx = clean.indexOf(']');
-        if (closeIdx !== -1) {
-            clean = clean.slice(1, closeIdx);
-        }
-    } else if (clean.includes('.') && clean.includes(':')) {
-        // Could be IPv4 with port (e.g. 1.2.3.4:5678) OR IPv4-mapped IPv6 (::ffff:1.2.3.4)
-        if (!clean.startsWith('::ffff:') && !clean.startsWith('::FFFF:')) {
-            const lastColon = clean.lastIndexOf(':');
-            const portPart = clean.slice(lastColon + 1);
-            if (/^\d+$/.test(portPart)) {
-                clean = clean.slice(0, lastColon);
-            }
-        }
+  if (clean.startsWith('[')) {
+    const closeIdx = clean.indexOf(']');
+    if (closeIdx !== -1) {
+      clean = clean.slice(1, closeIdx);
     }
-
-    // Normalize IPv4-mapped IPv6: ::ffff:192.168.1.1 -> 192.168.1.1
-    const ipv4MappedMatch = clean.match(/^::ffff:(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})$/i);
-    if (ipv4MappedMatch && ipv4MappedMatch[1]) {
-        return ipv4MappedMatch[1];
+  } else if (clean.includes('.') && clean.includes(':')) {
+    if (!clean.startsWith('::ffff:') && !clean.startsWith('::FFFF:')) {
+      const lastColon = clean.lastIndexOf(':');
+      const portPart = clean.slice(lastColon + 1);
+      if (/^\d+$/.test(portPart)) {
+        clean = clean.slice(0, lastColon);
+      }
     }
+  }
 
-    return clean;
+  const ipv4MappedMatch = clean.match(/^::ffff:(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})$/i);
+  if (ipv4MappedMatch && ipv4MappedMatch[1]) {
+    return ipv4MappedMatch[1];
+  }
+
+  return clean;
 }
 
-/**
- * Parses an IPv4 string into a 32-bit unsigned integer.
- * Returns null if not a valid IPv4 address.
- */
 export function parseIpv4(ip: string): number | null {
-    const parts = ip.split('.');
-    if (parts.length !== 4) return null;
+  const parts = ip.split('.');
+  if (parts.length !== 4) return null;
 
-    let num = 0;
-    for (let i = 0; i < 4; i++) {
-        const part = parts[i];
-        if (!part || !/^\d+$/.test(part)) return null;
-        const octet = parseInt(part, 10);
-        if (octet < 0 || octet > 255) return null;
-        num = (num << 8) | octet;
-    }
-    return num >>> 0;
+  let num = 0;
+  for (let i = 0; i < 4; i++) {
+    const part = parts[i];
+    if (!part || !/^\d+$/.test(part)) return null;
+    const octet = parseInt(part, 10);
+    if (octet < 0 || octet > 255) return null;
+    num = (num << 8) | octet;
+  }
+  return num >>> 0;
 }
 
-/**
- * Parses an IPv6 string into an array of 8 16-bit integers.
- * Returns null if not a valid IPv6 address.
- */
 export function parseIpv6(ipStr: string): number[] | null {
-    let clean = cleanIpString(ipStr);
+  let clean = cleanIpString(ipStr);
 
-    // IPv4-mapped addresses are not treated as native IPv6
-    if (clean.match(/^::ffff:\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}$/i)) {
-        return null;
+  if (clean.match(/^::ffff:\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}$/i)) {
+    return null;
+  }
+
+  if (clean.includes('::')) {
+    const parts = clean.split('::');
+    if (parts.length !== 2) return null;
+
+    const leftStr = parts[0];
+    const rightStr = parts[1];
+
+    const leftHextets: number[] = [];
+    if (leftStr && leftStr.length > 0) {
+      for (const h of leftStr.split(':')) {
+        if (!h || !/^[0-9a-fA-F]{1,4}$/.test(h)) return null;
+        leftHextets.push(parseInt(h, 16));
+      }
     }
 
-    if (clean.includes('::')) {
-        const parts = clean.split('::');
-        if (parts.length !== 2) return null;
-
-        const leftStr = parts[0];
-        const rightStr = parts[1];
-
-        const leftHextets: number[] = [];
-        if (leftStr && leftStr.length > 0) {
-            for (const h of leftStr.split(':')) {
-                if (!h || !/^[0-9a-fA-F]{1,4}$/.test(h)) return null;
-                leftHextets.push(parseInt(h, 16));
-            }
-        }
-
-        const rightHextets: number[] = [];
-        if (rightStr && rightStr.length > 0) {
-            for (const h of rightStr.split(':')) {
-                if (!h || !/^[0-9a-fA-F]{1,4}$/.test(h)) return null;
-                rightHextets.push(parseInt(h, 16));
-            }
-        }
-
-        const missing = 8 - (leftHextets.length + rightHextets.length);
-        if (missing < 1) return null;
-
-        return [...leftHextets, ...new Array(missing).fill(0), ...rightHextets];
-    } else {
-        const hextets: number[] = [];
-        for (const h of clean.split(':')) {
-            if (!h || !/^[0-9a-fA-F]{1,4}$/.test(h)) return null;
-            hextets.push(parseInt(h, 16));
-        }
-        if (hextets.length !== 8) return null;
-        return hextets;
+    const rightHextets: number[] = [];
+    if (rightStr && rightStr.length > 0) {
+      for (const h of rightStr.split(':')) {
+        if (!h || !/^[0-9a-fA-F]{1,4}$/.test(h)) return null;
+        rightHextets.push(parseInt(h, 16));
+      }
     }
+
+    const missing = 8 - (leftHextets.length + rightHextets.length);
+    if (missing < 1) return null;
+
+    return [...leftHextets, ...new Array(missing).fill(0), ...rightHextets];
+  } else {
+    const hextets: number[] = [];
+    for (const h of clean.split(':')) {
+      if (!h || !/^[0-9a-fA-F]{1,4}$/.test(h)) return null;
+      hextets.push(parseInt(h, 16));
+    }
+    if (hextets.length !== 8) return null;
+    return hextets;
+  }
 }
 
-/**
- * Truncates a native IPv6 address to its /64 prefix (e.g., 2001:db8:abcd:0012::/64).
- * Ensures IP rotation within a /64 prefix maps to the same identity key.
- */
+// Truncates native IPv6 to /64 prefix to group subnet rotation into a unified identity
 export function truncateIpv6To64(ip: string): string {
-    const hextets = parseIpv6(ip);
-    if (!hextets) {
-        return ip;
-    }
+  const hextets = parseIpv6(ip);
+  if (!hextets) {
+    return ip;
+  }
 
-    const h0 = (hextets[0] ?? 0).toString(16);
-    const h1 = (hextets[1] ?? 0).toString(16);
-    const h2 = (hextets[2] ?? 0).toString(16);
-    const h3 = (hextets[3] ?? 0).toString(16);
+  const h0 = (hextets[0] ?? 0).toString(16);
+  const h1 = (hextets[1] ?? 0).toString(16);
+  const h2 = (hextets[2] ?? 0).toString(16);
+  const h3 = (hextets[3] ?? 0).toString(16);
 
-    return `${h0}:${h1}:${h2}:${h3}::/64`;
+  return `${h0}:${h1}:${h2}:${h3}::/64`;
 }
 
-/**
- * Converts 8 IPv6 hextets to a 128-bit BigInt.
- */
 function ipv6ToBigInt(hextets: number[]): bigint {
-    let result = 0n;
-    for (const h of hextets) {
-        result = (result << 16n) | BigInt(h);
-    }
-    return result;
+  let result = 0n;
+  for (const h of hextets) {
+    result = (result << 16n) | BigInt(h);
+  }
+  return result;
 }
 
-/**
- * Checks if an IPv4 address is within an IPv4 CIDR range.
- */
 function isIpv4InCidr(ipInt: number, cidrIpInt: number, prefixLen: number): boolean {
-    if (prefixLen <= 0) return true;
-    if (prefixLen > 32) return false;
-    const mask = prefixLen === 32 ? 0xffffffff : (~((1 << (32 - prefixLen)) - 1)) >>> 0;
-    return ((ipInt & mask) >>> 0) === ((cidrIpInt & mask) >>> 0);
+  if (prefixLen <= 0) return true;
+  if (prefixLen > 32) return false;
+  const mask = prefixLen === 32 ? 0xffffffff : (~((1 << (32 - prefixLen)) - 1)) >>> 0;
+  return ((ipInt & mask) >>> 0) === ((cidrIpInt & mask) >>> 0);
 }
 
-/**
- * Checks if an IPv6 address is within an IPv6 CIDR range.
- */
 function isIpv6InCidr(ipBigInt: bigint, cidrBigInt: bigint, prefixLen: number): boolean {
-    if (prefixLen <= 0) return true;
-    if (prefixLen > 128) return false;
-    const shift = 128n - BigInt(prefixLen);
-    const mask = ((1n << 128n) - 1n) ^ ((1n << shift) - 1n);
-    return (ipBigInt & mask) === (cidrBigInt & mask);
+  if (prefixLen <= 0) return true;
+  if (prefixLen > 128) return false;
+  const shift = 128n - BigInt(prefixLen);
+  const mask = ((1n << 128n) - 1n) ^ ((1n << shift) - 1n);
+  return (ipBigInt & mask) === (cidrBigInt & mask);
 }
 
-/**
- * Determines whether an IP address matches a given CIDR notation or single IP string.
- */
 export function isIpInCidr(ipStr: string, cidrStr: string): boolean {
-    const cleanIp = cleanIpString(ipStr);
-    const trimmedCidr = cidrStr.trim();
+  const cleanIp = cleanIpString(ipStr);
+  const trimmedCidr = cidrStr.trim();
 
-    const [cidrBase, prefixStr] = trimmedCidr.split('/');
-    if (!cidrBase) return false;
+  const [cidrBase, prefixStr] = trimmedCidr.split('/');
+  if (!cidrBase) return false;
 
-    const cleanCidrBase = cleanIpString(cidrBase);
+  const cleanCidrBase = cleanIpString(cidrBase);
 
-    // Case 1: IPv4 comparison
-    const ipInt = parseIpv4(cleanIp);
-    const cidrBaseInt = parseIpv4(cleanCidrBase);
+  const ipInt = parseIpv4(cleanIp);
+  const cidrBaseInt = parseIpv4(cleanCidrBase);
 
-    if (ipInt !== null && cidrBaseInt !== null) {
-        const prefixLen = prefixStr !== undefined ? parseInt(prefixStr, 10) : 32;
-        if (isNaN(prefixLen)) return false;
-        return isIpv4InCidr(ipInt, cidrBaseInt, prefixLen);
-    }
+  if (ipInt !== null && cidrBaseInt !== null) {
+    const prefixLen = prefixStr !== undefined ? parseInt(prefixStr, 10) : 32;
+    if (isNaN(prefixLen)) return false;
+    return isIpv4InCidr(ipInt, cidrBaseInt, prefixLen);
+  }
 
-    // Case 2: IPv6 comparison
-    const ipHextets = parseIpv6(cleanIp);
-    const cidrHextets = parseIpv6(cleanCidrBase);
+  const ipHextets = parseIpv6(cleanIp);
+  const cidrHextets = parseIpv6(cleanCidrBase);
 
-    if (ipHextets !== null && cidrHextets !== null) {
-        const prefixLen = prefixStr !== undefined ? parseInt(prefixStr, 10) : 128;
-        if (isNaN(prefixLen)) return false;
-        return isIpv6InCidr(ipv6ToBigInt(ipHextets), ipv6ToBigInt(cidrHextets), prefixLen);
-    }
+  if (ipHextets !== null && cidrHextets !== null) {
+    const prefixLen = prefixStr !== undefined ? parseInt(prefixStr, 10) : 128;
+    if (isNaN(prefixLen)) return false;
+    return isIpv6InCidr(ipv6ToBigInt(ipHextets), ipv6ToBigInt(cidrHextets), prefixLen);
+  }
 
-    return false;
+  return false;
 }
 
-/**
- * Checks whether an IP belongs to any CIDR in a list of CIDR strings.
- */
 export function isIpInCidrList(ipStr: string, cidrs: string[]): boolean {
-    for (const cidr of cidrs) {
-        if (cidr.trim() && isIpInCidr(ipStr, cidr)) {
-            return true;
-        }
+  for (const cidr of cidrs) {
+    if (cidr.trim() && isIpInCidr(ipStr, cidr)) {
+      return true;
     }
-    return false;
+  }
+  return false;
 }
 
-/**
- * Normalizes an IP string:
- * - Unmaps ::ffff:a.b.c.d to clean IPv4.
- * - Truncates native IPv6 to /64 prefix.
- * - Preserves clean IPv4.
- */
 export function normalizeClientIp(ipStr: string): string {
-    const clean = cleanIpString(ipStr);
+  const clean = cleanIpString(ipStr);
 
-    // If it's IPv4
-    if (net.isIPv4(clean)) {
-        return clean;
-    }
-
-    // If it's native IPv6
-    if (net.isIPv6(clean)) {
-        return truncateIpv6To64(clean);
-    }
-
+  if (net.isIPv4(clean)) {
     return clean;
+  }
+
+  if (net.isIPv6(clean)) {
+    return truncateIpv6To64(clean);
+  }
+
+  return clean;
 }
 
-/**
- * Parses TRUSTED_PROXY_CIDRS from environment variable.
- */
 export function getTrustedProxyCidrs(): string[] {
-    const raw = process.env.TRUSTED_PROXY_CIDRS || '';
-    return raw
-        .split(',')
-        .map(c => c.trim())
-        .filter(c => c.length > 0);
+  const raw = process.env.TRUSTED_PROXY_CIDRS || '';
+  return raw
+    .split(',')
+    .map(c => c.trim())
+    .filter(c => c.length > 0);
 }
 
-/**
- * Derives and normalizes the client IP according to PRD v2.1:
- * - Defaults to `req.socket.remoteAddress || '127.0.0.1'`.
- * - Unmaps IPv4-mapped IPv6 (::ffff:a.b.c.d -> a.b.c.d).
- * - Truncates native IPv6 addresses to /64 prefix.
- * - Trusted Proxy Support: reads TRUSTED_PROXY_CIDRS.
- *   Only parses X-Forwarded-For if immediate socket peer is trusted;
- *   walks right-to-left skipping trusted proxies. Fallback to socket IP if untrusted.
- */
 export function getClientIp(req: Request): string {
-    const rawSocketIp = req.socket?.remoteAddress || '127.0.0.1';
-    const socketIp = cleanIpString(rawSocketIp);
+  const rawSocketIp = req.socket?.remoteAddress || '127.0.0.1';
+  const socketIp = cleanIpString(rawSocketIp);
 
-    const trustedCidrs = getTrustedProxyCidrs();
+  const trustedCidrs = getTrustedProxyCidrs();
 
-    // If no trusted CIDRs configured or immediate socket peer is NOT trusted,
-    // strictly fallback to normalized socket address
-    if (trustedCidrs.length === 0 || !isIpInCidrList(socketIp, trustedCidrs)) {
-        return normalizeClientIp(socketIp);
+  if (trustedCidrs.length === 0 || !isIpInCidrList(socketIp, trustedCidrs)) {
+    return normalizeClientIp(socketIp);
+  }
+
+  const rawXff = req.headers['x-forwarded-for'];
+  if (!rawXff) {
+    return normalizeClientIp(socketIp);
+  }
+
+  const xffStr = Array.isArray(rawXff) ? rawXff.join(',') : rawXff;
+  const parts = xffStr
+    .split(',')
+    .map(p => cleanIpString(p))
+    .filter(p => p.length > 0);
+
+  if (parts.length === 0) {
+    return normalizeClientIp(socketIp);
+  }
+
+  for (let i = parts.length - 1; i >= 0; i--) {
+    const candidate = parts[i]!;
+    if (isIpInCidrList(candidate, trustedCidrs)) {
+      continue;
     }
+    return normalizeClientIp(candidate);
+  }
 
-    // Immediate socket peer is a trusted proxy, inspect X-Forwarded-For
-    const rawXff = req.headers['x-forwarded-for'];
-    if (!rawXff) {
-        return normalizeClientIp(socketIp);
-    }
-
-    const xffStr = Array.isArray(rawXff) ? rawXff.join(',') : rawXff;
-    const parts = xffStr
-        .split(',')
-        .map(p => cleanIpString(p))
-        .filter(p => p.length > 0);
-
-    if (parts.length === 0) {
-        return normalizeClientIp(socketIp);
-    }
-
-    // Walk right-to-left, skipping trusted proxies
-    for (let i = parts.length - 1; i >= 0; i--) {
-        const candidate = parts[i]!;
-        if (isIpInCidrList(candidate, trustedCidrs)) {
-            continue; // Trusted proxy, skip
-        }
-        // Found the first untrusted IP in the chain from right-to-left
-        return normalizeClientIp(candidate);
-    }
-
-    // If all IPs in X-Forwarded-For are trusted proxies, fallback to the leftmost IP
-    const leftmost = parts[0]!;
-    return normalizeClientIp(leftmost);
+  const leftmost = parts[0]!;
+  return normalizeClientIp(leftmost);
 }
